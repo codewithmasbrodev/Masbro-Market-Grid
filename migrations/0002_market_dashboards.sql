@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS dashboards (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_hash TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT 'MY MARKET GRID',
+  columns INTEGER NOT NULL DEFAULT 2 CHECK (columns BETWEEN 1 AND 4),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS chart_panels (
+  id TEXT PRIMARY KEY NOT NULL,
+  dashboard_id TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('BITFINEX', 'BINANCE', 'CRYPTOCAP')),
+  symbol TEXT NOT NULL CHECK (length(symbol) BETWEEN 5 AND 40),
+  timeframe TEXT NOT NULL DEFAULT '1h' CHECK (timeframe IN ('1m','5m','15m','1h','4h','1D','1W')),
+  position INTEGER NOT NULL CHECK (position >= 0),
+  span INTEGER NOT NULL DEFAULT 1 CHECK (span BETWEEN 1 AND 2),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS chart_panels_dashboard_position_idx
+ON chart_panels(dashboard_id, position);

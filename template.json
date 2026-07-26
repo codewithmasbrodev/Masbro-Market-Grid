@@ -1,0 +1,8 @@
+{
+  "key": "cloudflare-app",
+  "name": "Cloudflare App",
+  "description": "Full app template for Cloudflare Workers with D1-ready persistence.",
+  "runtime": "cloudflare-worker",
+  "supportsDatabase": true,
+  "publishTarget": "cloudflare-worker"
+}
