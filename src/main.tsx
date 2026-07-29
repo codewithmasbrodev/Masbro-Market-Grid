@@ -190,26 +190,30 @@ function DashboardApp() {
   const load = useCallback(() => { setLoadingError(""); api.dashboard().then(setDashboard).catch((error: Error) => setLoadingError(error.message)); }, []);
   useEffect(load, [load]);
   const symbols = useMemo(() => [...new Set(dashboard?.panels.map((p) => p.symbol) ?? [])], [dashboard]);
+  // Vercel has no persistent WebSocket / Durable Object equivalent, so we poll the
+  // existing /api/market/snapshot endpoint instead of streaming over a socket.
   useEffect(() => {
     if (!symbols.length) { setStatus("offline"); return; }
-    let closed = false, attempts = 0, socket: WebSocket | null = null, timer = 0;
-    const connect = () => {
-      if (closed) return;
-      setStatus(attempts ? "reconnecting" : "connecting");
-      socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/market/stream`);
-      socket.onopen = () => { attempts = 0; socket?.send(JSON.stringify({ type: "subscribe", symbols })); };
-      socket.onmessage = (event) => {
-        const message = JSON.parse(String(event.data)) as { type: string; status?: ConnectionStatus; data?: MarketSnapshot[] };
-        if (message.status) setStatus(message.status);
-        if (message.data) { setSnapshots((current) => ({ ...current, ...Object.fromEntries(message.data!.map((item) => [item.symbol, item])) })); setLastUpdate(Date.now()); }
-      };
-      socket.onerror = () => setStatus("degraded");
-      socket.onclose = () => { if (!closed) { attempts++; setStatus("reconnecting"); timer = window.setTimeout(connect, Math.min(30_000, 1000 * 2 ** attempts) + Math.random() * 500); } };
+    let cancelled = false, failures = 0;
+    const tick = async (isFirst: boolean) => {
+      if (cancelled) return;
+      setStatus((current) => (isFirst ? "connecting" : current === "live" || current === "degraded" ? current : "connecting"));
+      try {
+        const data = await api.snapshots(symbols);
+        if (cancelled) return;
+        failures = 0;
+        setSnapshots((current) => ({ ...current, ...Object.fromEntries(data.map((item) => [item.symbol, item])) }));
+        setLastUpdate(Date.now());
+        setStatus(data.some((item) => item.sourceStatus === "live") ? "live" : "degraded");
+      } catch {
+        if (cancelled) return;
+        failures++;
+        setStatus(failures > 2 ? "degraded" : "reconnecting");
+      }
     };
-    api.snapshots(symbols).then((data) => setSnapshots(Object.fromEntries(data.map((item) => [item.symbol, item])))).catch(() => undefined);
-    connect();
-    const heartbeat = window.setInterval(() => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify({ type: "ping" })), 20_000);
-    return () => { closed = true; clearTimeout(timer); clearInterval(heartbeat); socket?.close(); };
+    void tick(true);
+    const poll = window.setInterval(() => void tick(false), 8_000);
+    return () => { cancelled = true; clearInterval(poll); };
   }, [symbols, streamKey]);
 
   const saveLayout = async (panels: Panel[], columns = dashboard?.columns ?? 2) => {
