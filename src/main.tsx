@@ -1,7 +1,7 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, Database, GripVertical, LayoutGrid, LoaderCircle, Move, Plus, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Trash2, X, Zap } from "lucide-react";
-import { api } from "./lib/api";
+import { api, type WhaleTx } from "./lib/api";
 import { INSTRUMENTS, TIMEFRAMES, type ChartPanel as Panel, type ConnectionStatus, type Dashboard, type Instrument, type MarketSnapshot, type Timeframe } from "./lib/types";
 import "./styles.css";
 
@@ -184,6 +184,7 @@ function DashboardApp() {
   const [streamKey, setStreamKey] = useState(0);
   const [dragged, setDragged] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [whales, setWhales] = useState<WhaleTx[]>([]);
   const panelMutationVersion = useRef<Record<string, number>>({});
   const panelMutationQueue = useRef<Record<string, Promise<unknown>>>({});
 
@@ -215,6 +216,20 @@ function DashboardApp() {
     const poll = window.setInterval(() => void tick(false), 8_000);
     return () => { cancelled = true; clearInterval(poll); };
   }, [symbols, streamKey]);
+  
+  // Poll whale transactions
+  useEffect(() => {
+    let cancelled = false;
+    const fetchWhales = async () => {
+      try {
+        const data = await api.whales();
+        if (!cancelled) setWhales(data.slice(0, 10));
+      } catch {}
+    };
+    void fetchWhales();
+    const interval = window.setInterval(fetchWhales, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const saveLayout = async (panels: Panel[], columns = dashboard?.columns ?? 2) => {
     if (!dashboard) return;
@@ -327,7 +342,7 @@ function DashboardApp() {
     {/* Bloomberg Bottom Status Bar */}
     <div className="bb-bottom">
       <span>DATA: BITFINEX <span className="dot green" style={{ display: "inline-block", width: 4, height: 4, borderRadius: "50%", background: "var(--green)", margin: "0 4px" }} /> LIVE</span>
-      <span className="ticker-msg">BTC {snapshots["BITFINEX:BTCUSD"]?.price != null ? `${money.format(snapshots["BITFINEX:BTCUSD"].price!)}` : "—"} · ETH {snapshots["BITFINEX:ETHUSD"]?.price != null ? `${money.format(snapshots["BITFINEX:ETHUSD"].price!)}` : "—"} · SYSTEM ONLINE — MARKET GRID INTELLIGENCE v1.0</span>
+      <span className="ticker-msg">BTC {snapshots["BITFINEX:BTCUSD"]?.price != null ? `$${money.format(snapshots["BITFINEX:BTCUSD"].price!)}` : "—"} · ETH {snapshots["BITFINEX:ETHUSD"]?.price != null ? `$${money.format(snapshots["BITFINEX:ETHUSD"].price!)}` : "—"} · {whales.slice(0, 3).map((w) => `WHALE: ${w.amount.toFixed(1)} ${w.token} ($${(w.usdValue ?? 0).toLocaleString("en-US")}) → ${w.toLabel}`).join(" │ ")} — MARKET GRID INTELLIGENCE v1.0</span>
       <span className="creator"><CreatorCredit /></span>
     </div>
 

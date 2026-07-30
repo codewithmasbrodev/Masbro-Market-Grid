@@ -1,5 +1,20 @@
 import type { ChartPanel, Dashboard, Instrument, MarketSnapshot, Provider, Timeframe } from "./types";
 
+export interface WhaleTx {
+  id: string;
+  chain: "BTC" | "ETH" | "SOL" | "ERC20";
+  token: string;
+  amount: number;
+  usdValue: number | null;
+  from: string;
+  to: string;
+  fromLabel: string;
+  toLabel: string;
+  timestamp: number;
+  txHash: string;
+  category: "exchange" | "unknown" | "whale" | "institutional";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
@@ -23,6 +38,7 @@ export const api = {
     request<Instrument[]>(`/api/instruments?q=${encodeURIComponent(query)}`, { signal }),
   snapshots: (symbols: string[]) =>
     request<MarketSnapshot[]>(`/api/snapshot?symbols=${encodeURIComponent(symbols.join(","))}`),
+  whales: () => request<WhaleTx[]>("/api/whales"),
   addPanel: (provider: Provider, symbol: string, timeframe: Timeframe) =>
     request<ChartPanel>("/api/panels", jsonInit("POST", { provider, symbol, timeframe })),
   updatePanel: (id: string, changes: Partial<Pick<ChartPanel, "provider" | "symbol" | "timeframe" | "span">>) =>
