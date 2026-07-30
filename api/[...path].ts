@@ -64,7 +64,7 @@ async function fetchBtcWhales(): Promise<WhaleTx[]> {
     const resp = await fetch("https://mempool.space/api/mempool/recent", { signal: AbortSignal.timeout(8000) });
     if (!resp.ok) return [];
     const txs = await resp.json() as { txid: string; fee: number; value: number; time: number }[];
-    const MIN_BTC = 10; // 10 BTC minimum for whale
+    const MIN_BTC = 5; // 10 BTC minimum for whale
     const btcPrice = 64000;
     return txs
       .filter((tx) => tx.value >= MIN_BTC * 1e8)
@@ -92,25 +92,27 @@ async function fetchBtcWhales(): Promise<WhaleTx[]> {
 // ── ETH Whales from Etherscan (FREE API) ──
 async function fetchEthWhales(): Promise<WhaleTx[]> {
   try {
-    // Use latest block to get recent txs via public Etherscan (no key needed for basic)
-    // Fallback: use eth RPC directly
-    const resp = await fetch(
-      "https://api.etherscan.io/api?module=proxy&action=eth_blockNumber",
-      { signal: AbortSignal.timeout(5000) }
-    );
+    // Use free public Ethereum RPC (no API key needed)
+    const RPC = "https://ethereum-rpc.publicnode.com";
+    const resp = await fetch(RPC, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
+      signal: AbortSignal.timeout(5000),
+    });
     if (!resp.ok) return [];
     const blockData = await resp.json() as { result: string };
-    const blockNum = parseInt(blockData.result, 16);
-
-    // Get block by number (no key needed for proxy calls)
-    const blockResp = await fetch(
-      `https://api.etherscan.io/api?module=proxy&action=eth_getBlockByNumber&tag=${blockData.result}&boolean=true`,
-      { signal: AbortSignal.timeout(8000) }
-    );
+    
+    const blockResp = await fetch(RPC, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_getBlockByNumber", params: [blockData.result, true] }),
+      signal: AbortSignal.timeout(8000),
+    });
     if (!blockResp.ok) return [];
     const block = await blockResp.json() as { result: { transactions: { hash: string; from: string; to: string; value: string }[] } };
     const txs = block.result?.transactions ?? [];
-    const MIN_ETH = 100; // 100 ETH minimum
+    const MIN_ETH = 50; // 100 ETH minimum
     const ethPrice = 1900;
 
     return txs
