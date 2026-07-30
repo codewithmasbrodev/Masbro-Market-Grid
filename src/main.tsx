@@ -267,12 +267,70 @@ function DashboardApp() {
   if (!dashboard) return <main className="center-state"><LoaderCircle className="spin" /><h1>MENYUSUN MARKET GRID</h1><p>Memuat panel dan menghubungkan feed pasar…</p></main>;
 
   return <div className="app-shell">
-    <div className="ticker-strip"><span>MARKET GRID INTELLEGENCE // LIVE INTELLIGENCE</span><span>BTC · ETH · SOL · XRP · DOGE · TOTAL MARKET</span><span>UTC {new Date().toISOString().slice(11, 19)}</span></div>
-    <header className="topbar"><Brand href="/" /><div className="top-actions"><ConnectionBadge status={status} onRetry={() => setStreamKey((v) => v + 1)} /><span className="updated">UPDATE TERAKHIR<strong>{lastUpdate ? new Date(lastUpdate).toLocaleTimeString("id-ID") : "—"}</strong></span><button className="btn primary" onClick={() => setModal("add")}><Plus /> TAMBAH CHART</button></div></header>
-    <main id="top"><section className="workspace-head"><div><span className="eyebrow">WORKSPACE / 01</span><h1>{dashboard.name}</h1><p>{dashboard.panels.length} MODUL AKTIF · MARKET DATA TANPA REFRESH</p></div><div className="layout-control"><label><LayoutGrid /> KOLOM</label>{[1, 2, 3, 4].map((count) => <button key={count} aria-label={`${count} kolom`} className={dashboard.columns === count ? "active" : ""} onClick={() => void saveLayout(dashboard.panels, count)}>{count}</button>)}<span className={saving ? "saving active" : "saving"}>{saving ? "MENYIMPAN…" : "TERSIMPAN"}</span></div></section>
-      {dashboard.panels.length ? <section className="market-grid" style={{ "--columns": dashboard.columns } as React.CSSProperties}>{dashboard.panels.map((panel) => <ChartPanel key={panel.id} panel={panel} snapshot={snapshots[panel.symbol]} draggable onDragStart={() => setDragged(panel.id)} onDrop={() => { if (!dragged || dragged === panel.id) return; const next = [...dashboard.panels]; const from = next.findIndex((p) => p.id === dragged), to = next.findIndex((p) => p.id === panel.id); const [item] = next.splice(from, 1); next.splice(to, 0, item); setDragged(null); void saveLayout(next); }} onMove={(d) => move(panel.id, d)} onTimeframe={(tf) => { void mutatePanel(panel, { timeframe: tf }).catch(() => undefined); }} onEdit={() => { setActivePanel(panel); setModal("edit"); }} onRemove={() => { setActivePanel(panel); setModal("delete"); }} />)}</section> : <section className="empty-state"><Activity /><span className="eyebrow">GRID KOSONG</span><h2>MULAI PANTAU PASAR</h2><p>Tambahkan instrumen pertama untuk membangun workspace Anda.</p><button className="btn primary" onClick={() => setModal("add")}><Plus /> TAMBAH CHART</button></section>}
+    {/* Bloomberg Amber Command Bar */}
+    <div className="bb-bar">
+      <span className="bb-title"><strong>MARKET GRID</strong> INTELLIGENCE</span>
+      <span className="bb-status">
+        <span><span className="dot green" /> SYS:{status === "live" ? "OK" : status.toUpperCase()}</span>
+        <span className="live">FEED:{(symbols.length > 0 && Object.keys(snapshots).length > 0) ? "LIVE" : "IDLE"}</span>
+        <span>UTC {new Date().toISOString().slice(11, 19)}</span>
+      </span>
+    </div>
+
+    {/* Bloomberg Tab Navigation */}
+    <div className="bb-tabs">
+      <span className="tab active"><span className="key">[1]</span> MONITOR</span>
+      <span className="tab"><span className="key">[2]</span> CHARTS</span>
+      <span className="tab"><span className="key">[3]</span> {dashboard?.panels.length ?? 0} PAIRS</span>
+    </div>
+
+    {/* Compact Topbar */}
+    <header className="topbar">
+      <Brand href="/" />
+      <div className="top-actions">
+        <ConnectionBadge status={status} onRetry={() => setStreamKey((v) => v + 1)} />
+        <span className="updated">LAST<strong>{lastUpdate ? new Date(lastUpdate).toLocaleTimeString("id-ID") : "—"}</strong></span>
+        <button className="btn primary" onClick={() => setModal("add")}><Plus /> <span>ADD</span></button>
+      </div>
+    </header>
+
+    {/* Main Workspace */}
+    <main id="top">
+      <section className="workspace-head">
+        <div>
+          <span className="eyebrow">WORKSPACE / 01</span>
+          <h1>{dashboard.name}</h1>
+          <p>{dashboard.panels.length} MODULES · REAL-TIME</p>
+        </div>
+        <div className="layout-control">
+          <label><LayoutGrid /> COL</label>
+          {[1, 2, 3, 4].map((count) => <button key={count} aria-label={`${count} kolom`} className={dashboard.columns === count ? "active" : ""} onClick={() => void saveLayout(dashboard.panels, count)}>{count}</button>)}
+          <span className={saving ? "saving active" : "saving"}>{saving ? "SAVE…" : "SAVED"}</span>
+        </div>
+      </section>
+
+      {/* Market Grid */}
+      {dashboard.panels.length ? (
+        <section className="market-grid" style={{ "--columns": dashboard.columns } as React.CSSProperties}>
+          {dashboard.panels.map((panel) => <ChartPanel key={panel.id} panel={panel} snapshot={snapshots[panel.symbol]} draggable onDragStart={() => setDragged(panel.id)} onDrop={() => { if (!dragged || dragged === panel.id) return; const next = [...dashboard.panels]; const from = next.findIndex((p) => p.id === dragged), to = next.findIndex((p) => p.id === panel.id); const [item] = next.splice(from, 1); next.splice(to, 0, item); setDragged(null); void saveLayout(next); }} onMove={(d) => move(panel.id, d)} onTimeframe={(tf) => { void mutatePanel(panel, { timeframe: tf }).catch(() => undefined); }} onEdit={() => { setActivePanel(panel); setModal("edit"); }} onRemove={() => { setActivePanel(panel); setModal("delete"); }} />)}
+        </section>
+      ) : (
+        <section className="empty-state">
+          <Activity /><span className="eyebrow">GRID EMPTY</span>
+          <h2>START MONITORING</h2>
+          <p>Add your first instrument to build the workspace.</p>
+          <button className="btn primary" onClick={() => setModal("add")}><Plus /> ADD CHART</button>
+        </section>
+      )}
     </main>
-    <footer><div><strong>DATA PIPELINE</strong><span><i className="dot live" /> BINANCE PUBLIC API</span><span><i className="dot live" /> BITFINEX PUBLIC API</span><span><i className="dot limited" /> GLOBAL METRICS*</span><CreatorCredit /></div><p>Chart oleh <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView</a>. Data oleh <a href="https://www.binance.com/en/terms" target="_blank" rel="noreferrer">Binance</a> dan <a href="https://www.bitfinex.com/legal/" target="_blank" rel="noreferrer">Bitfinex</a>. Data hanya untuk informasi, bukan nasihat finansial.</p></footer>
+
+    {/* Bloomberg Bottom Status Bar */}
+    <div className="bb-bottom">
+      <span>DATA: BITFINEX <span className="dot green" style={{ display: "inline-block", width: 4, height: 4, borderRadius: "50%", background: "var(--green)", margin: "0 4px" }} /> LIVE</span>
+      <span className="ticker-msg">BTC {snapshots["BITFINEX:BTCUSD"]?.price != null ? `${money.format(snapshots["BITFINEX:BTCUSD"].price!)}` : "—"} · ETH {snapshots["BITFINEX:ETHUSD"]?.price != null ? `${money.format(snapshots["BITFINEX:ETHUSD"].price!)}` : "—"} · SYSTEM ONLINE — MARKET GRID INTELLIGENCE v1.0</span>
+      <span className="creator"><CreatorCredit /></span>
+    </div>
+
     <p className="sr-only" aria-live="polite">{announcement}</p>
     {modal === "add" && <InstrumentSearch onClose={() => setModal(null)} onAdd={async (instrument, timeframe) => { const added = await api.addPanel(instrument.provider, instrument.symbol, timeframe); setDashboard((current) => current ? { ...current, panels: [...current.panels, added] } : current); setAnnouncement(`${instrument.symbol} ditambahkan.`); }} />}
     {modal === "edit" && activePanel && <InstrumentSearch initial={activePanel} onClose={() => setModal(null)} onAdd={async (instrument, timeframe) => mutatePanel(activePanel, { provider: instrument.provider, symbol: instrument.symbol, timeframe })} />}
