@@ -26,8 +26,8 @@ export const api = {
   addPanel: (provider: Provider, symbol: string, timeframe: Timeframe) =>
     request<ChartPanel>("/api/panels", jsonInit("POST", { provider, symbol, timeframe })),
   updatePanel: (id: string, changes: Partial<Pick<ChartPanel, "provider" | "symbol" | "timeframe" | "span">>) =>
-    request<ChartPanel>(`/api/panel/${id}`, jsonInit("PATCH", changes)),
-  removePanel: (id: string) => request<{ ok: true }>(`/api/panel/${id}`, { method: "DELETE" }),
+    request<ChartPanel>(`/api/panel?id=${id}`, jsonInit("PUT", changes)),
+  removePanel: (id: string) => request<{ ok: true }>(`/api/panel?id=${id}`, { method: "DELETE" }),
   saveLayout: (columns: number, panelIds: string[]) =>
     request<{ ok: true }>("/api/layout", jsonInit("PUT", { columns, panelIds })),
 };

@@ -156,22 +156,23 @@ export default async function handler(request: Request): Promise<Response> {
     return json(panelResponse({ ...row, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }), 201, headers);
   }
 
-  // /api/panel/:id — DELETE or PATCH
-  const match = url.pathname.match(/^\/api\/panel\/([\w-]+)$/);
-  if (match) {
+  // /api/panel — DELETE or PUT (panel id via query param, since Vercel edge
+  // catch-all only routes single-level paths reliably)
+  if (url.pathname === "/api/panel") {
+    const panelId = url.searchParams.get("id");
+    if (!panelId) return error("Parameter panel id diperlukan.", 422);
     const identity = await owner(request);
     const headers = new Headers(securityHeaders);
     if (identity.cookie) headers.set("set-cookie", identity.cookie);
     const dashboard = await ensureDashboard(identity.hash);
     const db = getDb();
-    const panelId = match[1];
     const current = (await db.select().from(chartPanels).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id))).limit(1))[0];
     if (!current) return error("Panel tidak ditemukan.", 404);
     if (request.method === "DELETE") {
       await db.delete(chartPanels).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id)));
       return json({ ok: true }, 200, headers);
     }
-    if (request.method === "PATCH") {
+    if (request.method === "PUT") {
       const body = await parseBody(request);
       const provider = body?.provider ?? current.provider;
       const symbol = body?.symbol ?? current.symbol;
