@@ -64,7 +64,7 @@ async function fetchBtcWhales(): Promise<WhaleTx[]> {
     const resp = await fetch("https://mempool.space/api/mempool/recent", { signal: AbortSignal.timeout(8000) });
     if (!resp.ok) return [];
     const txs = await resp.json() as { txid: string; fee: number; value: number; time: number }[];
-    const MIN_BTC = 5; // 10 BTC minimum for whale
+    const MIN_BTC = 3; // 10 BTC minimum for whale
     const btcPrice = 64000;
     return txs
       .filter((tx) => tx.value >= MIN_BTC * 1e8)
@@ -112,7 +112,7 @@ async function fetchEthWhales(): Promise<WhaleTx[]> {
     if (!blockResp.ok) return [];
     const block = await blockResp.json() as { result: { transactions: { hash: string; from: string; to: string; value: string }[] } };
     const txs = block.result?.transactions ?? [];
-    const MIN_ETH = 50; // 100 ETH minimum
+    const MIN_ETH = 10; // 100 ETH minimum
     const ethPrice = 1900;
 
     return txs
