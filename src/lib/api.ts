@@ -15,17 +15,19 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+// All API endpoints use single-level paths to work around a Vercel edge
+// function catch-all ([...path].ts) routing issue with multi-level paths.
 export const api = {
   dashboard: () => request<Dashboard>("/api/dashboard"),
   instruments: (query: string, signal?: AbortSignal) =>
     request<Instrument[]>(`/api/instruments?q=${encodeURIComponent(query)}`, { signal }),
   snapshots: (symbols: string[]) =>
-    request<MarketSnapshot[]>(`/api/market/snapshot?symbols=${encodeURIComponent(symbols.join(","))}`),
+    request<MarketSnapshot[]>(`/api/snapshot?symbols=${encodeURIComponent(symbols.join(","))}`),
   addPanel: (provider: Provider, symbol: string, timeframe: Timeframe) =>
-    request<ChartPanel>("/api/dashboard/panels", jsonInit("POST", { provider, symbol, timeframe })),
+    request<ChartPanel>("/api/panels", jsonInit("POST", { provider, symbol, timeframe })),
   updatePanel: (id: string, changes: Partial<Pick<ChartPanel, "provider" | "symbol" | "timeframe" | "span">>) =>
-    request<ChartPanel>(`/api/dashboard/panels/${id}`, jsonInit("PATCH", changes)),
-  removePanel: (id: string) => request<{ ok: true }>(`/api/dashboard/panels/${id}`, { method: "DELETE" }),
+    request<ChartPanel>(`/api/panel/${id}`, jsonInit("PATCH", changes)),
+  removePanel: (id: string) => request<{ ok: true }>(`/api/panel/${id}`, { method: "DELETE" }),
   saveLayout: (columns: number, panelIds: string[]) =>
-    request<{ ok: true }>("/api/dashboard/layout", jsonInit("PUT", { columns, panelIds })),
+    request<{ ok: true }>("/api/layout", jsonInit("PUT", { columns, panelIds })),
 };

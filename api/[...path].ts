@@ -98,6 +98,8 @@ async function marketSnapshot(symbol: string): Promise<MarketSnapshot> {
   } catch { return unavailable(); }
 }
 
+// All routes use single-level paths because Vercel edge catch-all ([...path].ts)
+// does not reliably route multi-level paths. Keep api endpoints flat.
 export default async function handler(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const securityHeaders = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
@@ -111,65 +113,76 @@ export default async function handler(request: Request): Promise<Response> {
     const results = INSTRUMENTS.filter((item) => `${item.symbol} ${item.provider} ${item.label} ${item.base} ${item.quote}`.toLowerCase().includes(query)).slice(0, 40);
     return json(results, 200, securityHeaders);
   }
-  if (url.pathname === "/api/market/snapshot" && request.method === "GET") {
+  if (url.pathname === "/api/snapshot" && request.method === "GET") {
     const symbols = [...new Set((url.searchParams.get("symbols") ?? "").split(","))].filter((symbol) => INSTRUMENTS.some((item) => item.symbol === symbol)).slice(0, MAX_PANELS);
     return json(await Promise.all(symbols.map((symbol) => marketSnapshot(symbol))), 200, securityHeaders);
   }
-  if (!url.pathname.startsWith("/api/dashboard")) return error("Endpoint tidak ditemukan.", 404);
-
-  const identity = await owner(request);
-  const headers = new Headers(securityHeaders);
-  if (identity.cookie) headers.set("set-cookie", identity.cookie);
-  try {
-    if (url.pathname === "/api/dashboard" && request.method === "GET") return json(await fullDashboard(identity.hash), 200, headers);
+  if (url.pathname === "/api/dashboard" && request.method === "GET") {
+    const identity = await owner(request);
+    const headers = new Headers(securityHeaders);
+    if (identity.cookie) headers.set("set-cookie", identity.cookie);
+    return json(await fullDashboard(identity.hash), 200, headers);
+  }
+  if (url.pathname === "/api/layout" && request.method === "PUT") {
+    const identity = await owner(request);
+    const headers = new Headers(securityHeaders);
+    if (identity.cookie) headers.set("set-cookie", identity.cookie);
     const dashboard = await ensureDashboard(identity.hash);
     const db = getDb();
-    if (url.pathname === "/api/dashboard/layout" && request.method === "PUT") {
-      const body = await parseBody(request);
-      const columns = body?.columns;
-      const panelIds = body?.panelIds;
-      const owned = await db.select({ id: chartPanels.id }).from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id));
-      if (!Number.isInteger(columns) || Number(columns) < 1 || Number(columns) > 4 || !Array.isArray(panelIds) || panelIds.length !== owned.length || new Set(panelIds).size !== panelIds.length || panelIds.some((id) => typeof id !== "string" || !owned.some((row) => row.id === id))) return error("Susunan dashboard tidak valid.", 422);
-      await db.update(dashboards).set({ columns: Number(columns), updatedAt: new Date().toISOString() }).where(eq(dashboards.id, dashboard.id));
-      for (const [index, id] of (panelIds as string[]).entries()) {
-        await db.update(chartPanels).set({ position: index, updatedAt: new Date().toISOString() }).where(and(eq(chartPanels.id, id), eq(chartPanels.dashboardId, dashboard.id)));
-      }
+    const body = await parseBody(request);
+    const columns = body?.columns;
+    const panelIds = body?.panelIds;
+    const owned = await db.select({ id: chartPanels.id }).from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id));
+    if (!Number.isInteger(columns) || Number(columns) < 1 || Number(columns) > 4 || !Array.isArray(panelIds) || panelIds.length !== owned.length || new Set(panelIds).size !== panelIds.length || panelIds.some((id) => typeof id !== "string" || !owned.some((row) => row.id === id))) return error("Susunan dashboard tidak valid.", 422);
+    await db.update(dashboards).set({ columns: Number(columns), updatedAt: new Date().toISOString() }).where(eq(dashboards.id, dashboard.id));
+    for (const [index, id] of (panelIds as string[]).entries()) {
+      await db.update(chartPanels).set({ position: index, updatedAt: new Date().toISOString() }).where(and(eq(chartPanels.id, id), eq(chartPanels.dashboardId, dashboard.id)));
+    }
+    return json({ ok: true }, 200, headers);
+  }
+  if (url.pathname === "/api/panels" && request.method === "POST") {
+    const identity = await owner(request);
+    const headers = new Headers(securityHeaders);
+    if (identity.cookie) headers.set("set-cookie", identity.cookie);
+    const dashboard = await ensureDashboard(identity.hash);
+    const db = getDb();
+    const body = await parseBody(request);
+    const instrument = validInstrument(body?.provider, body?.symbol);
+    if (!instrument || !validTimeframe(body?.timeframe)) return error("Instrumen atau timeframe tidak valid.", 422);
+    const rows = await db.select().from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id));
+    if (rows.length >= MAX_PANELS) return error("Maksimum 16 chart.", 429);
+    const row = { id: crypto.randomUUID(), dashboardId: dashboard.id, provider: instrument.provider, symbol: instrument.symbol, timeframe: body.timeframe as Timeframe, position: rows.length, span: 1 };
+    await db.insert(chartPanels).values(row);
+    return json(panelResponse({ ...row, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }), 201, headers);
+  }
+
+  // /api/panel/:id — DELETE or PATCH
+  const match = url.pathname.match(/^\/api\/panel\/([\w-]+)$/);
+  if (match) {
+    const identity = await owner(request);
+    const headers = new Headers(securityHeaders);
+    if (identity.cookie) headers.set("set-cookie", identity.cookie);
+    const dashboard = await ensureDashboard(identity.hash);
+    const db = getDb();
+    const panelId = match[1];
+    const current = (await db.select().from(chartPanels).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id))).limit(1))[0];
+    if (!current) return error("Panel tidak ditemukan.", 404);
+    if (request.method === "DELETE") {
+      await db.delete(chartPanels).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id)));
       return json({ ok: true }, 200, headers);
     }
-    if (url.pathname === "/api/dashboard/panels" && request.method === "POST") {
+    if (request.method === "PATCH") {
       const body = await parseBody(request);
-      const instrument = validInstrument(body?.provider, body?.symbol);
-      if (!instrument || !validTimeframe(body?.timeframe)) return error("Instrumen atau timeframe tidak valid.", 422);
-      const rows = await db.select().from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id));
-      if (rows.length >= MAX_PANELS) return error("Maksimum 16 chart.", 429);
-      const row = { id: crypto.randomUUID(), dashboardId: dashboard.id, provider: instrument.provider, symbol: instrument.symbol, timeframe: body.timeframe as Timeframe, position: rows.length, span: 1 };
-      await db.insert(chartPanels).values(row);
-      return json(panelResponse({ ...row, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }), 201, headers);
+      const provider = body?.provider ?? current.provider;
+      const symbol = body?.symbol ?? current.symbol;
+      const timeframe = body?.timeframe ?? current.timeframe;
+      const span = body?.span ?? current.span;
+      if (!validInstrument(provider, symbol) || !validTimeframe(timeframe) || !Number.isInteger(span) || Number(span) < 1 || Number(span) > 2) return error("Perubahan panel tidak valid.", 422);
+      await db.update(chartPanels).set({ provider: String(provider), symbol: String(symbol), timeframe, span: Number(span), updatedAt: new Date().toISOString() }).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id)));
+      const updated = (await db.select().from(chartPanels).where(eq(chartPanels.id, panelId)).limit(1))[0];
+      return json(panelResponse(updated), 200, headers);
     }
-    const match = url.pathname.match(/^\/api\/dashboard\/panels\/([\w-]+)$/);
-    if (match) {
-      const panelId = match[1];
-      const current = (await db.select().from(chartPanels).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id))).limit(1))[0];
-      if (!current) return error("Panel tidak ditemukan.", 404);
-      if (request.method === "DELETE") {
-        await db.delete(chartPanels).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id)));
-        return json({ ok: true }, 200, headers);
-      }
-      if (request.method === "PATCH") {
-        const body = await parseBody(request);
-        const provider = body?.provider ?? current.provider;
-        const symbol = body?.symbol ?? current.symbol;
-        const timeframe = body?.timeframe ?? current.timeframe;
-        const span = body?.span ?? current.span;
-        if (!validInstrument(provider, symbol) || !validTimeframe(timeframe) || !Number.isInteger(span) || Number(span) < 1 || Number(span) > 2) return error("Perubahan panel tidak valid.", 422);
-        await db.update(chartPanels).set({ provider: String(provider), symbol: String(symbol), timeframe, span: Number(span), updatedAt: new Date().toISOString() }).where(and(eq(chartPanels.id, panelId), eq(chartPanels.dashboardId, dashboard.id)));
-        const updated = (await db.select().from(chartPanels).where(eq(chartPanels.id, panelId)).limit(1))[0];
-        return json(panelResponse(updated), 200, headers);
-      }
-    }
-    return error("Endpoint tidak ditemukan.", 404);
-  } catch (cause) {
-    console.error("Dashboard request failed", cause);
-    return error("Layanan dashboard sedang bermasalah. Coba lagi.", 500);
   }
+
+  return error("Endpoint tidak ditemukan.", 404);
 }
