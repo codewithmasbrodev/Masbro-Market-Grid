@@ -274,6 +274,13 @@ export default async function handler(request: Request): Promise<Response> {
     return json(await fetchWhales(), 200, securityHeaders);
   }
   if (url.pathname === "/api/dashboard" && request.method === "GET") {
+    const identity = await owner(request);
+    const headers = new Headers(securityHeaders);
+    if (identity.cookie) headers.set("set-cookie", identity.cookie);
+    return json(await fullDashboard(identity.hash), 200, headers);
+  }
+  
+  // ── Auth for dashboard mutations ──
   const identity = await owner(request);
   const headers = new Headers(securityHeaders);
   if (identity.cookie) headers.set("set-cookie", identity.cookie);
