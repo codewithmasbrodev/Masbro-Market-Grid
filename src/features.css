@@ -1,0 +1,302 @@
+/* =====================================================
+   FEATURE MODULES — Portfolio & PnL, Price Alerts,
+   MASBRO AI brief, toasts (matches terminal theme)
+   ===================================================== */
+
+/* ── Dashboard topbar buttons ── */
+.app-shell .top-actions .btn.ghost {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #2a2a2a;
+  background: #0d0d0d;
+  color: var(--ink);
+  gap: 5px;
+  position: relative;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.app-shell .top-actions .btn.ghost:hover {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--hl-bg);
+}
+.app-shell .top-actions .btn.ghost svg { width: 13px; height: 13px; }
+.app-shell .top-actions .ai-btn { border-color: #004b4b; color: var(--cyan); }
+.app-shell .top-actions .ai-btn:hover { border-color: var(--cyan); color: var(--cyan); background: #001a1a; }
+.alert-bell .badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #000;
+  font: 800 9px/15px "Courier New", monospace;
+  text-align: center;
+  box-shadow: 0 0 8px rgba(255, 176, 0, .6);
+}
+@media (max-width: 720px) {
+  .app-shell .top-actions .btn-label { display: none; }
+  .app-shell .top-actions .updated { display: none; }
+}
+
+/* ── Portfolio summary strip ── */
+.portfolio-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 1px;
+  margin: 0 0 4px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+.portfolio-strip > div {
+  padding: 6px 10px;
+  background: #0a0a0a;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.portfolio-strip span {
+  color: #555;
+  font: 700 8px/1 "Courier New", monospace;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+.portfolio-strip strong {
+  font: 700 13px/1 "Courier New", monospace;
+  color: #fff;
+  white-space: nowrap;
+}
+.portfolio-strip strong em {
+  margin-left: 5px;
+  font-size: 9px;
+  font-style: normal;
+  opacity: .85;
+}
+.portfolio-strip .portfolio-open {
+  background: #060606;
+  justify-content: flex-end;
+}
+.portfolio-strip .portfolio-open .btn.ghost { border-color: #2a2a2a; color: #777; }
+.portfolio-strip .portfolio-open .btn.ghost:hover { border-color: var(--green); color: var(--green); }
+.portfolio-strip .positive strong, .portfolio-strip .negative strong { color: var(--green); }
+.portfolio-strip .negative strong { color: var(--red); }
+
+/* ── Shared modal form bits ── */
+.input-dark {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #2a2a2a;
+  background: #060606;
+  color: var(--ink);
+  outline: none;
+}
+.input-dark:focus { border-color: var(--green); }
+.modal-empty {
+  padding: 18px 8px;
+  color: #666;
+  font-size: 11px;
+  text-align: center;
+  border: 1px dashed #222;
+}
+.select-wide { width: 100%; }
+
+/* ── Portfolio modal ── */
+.portfolio-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  margin: 10px 0 12px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+.portfolio-summary > div { padding: 8px 10px; background: #0a0a0a; }
+.portfolio-summary span {
+  display: block;
+  color: #555;
+  font: 700 8px/1.2 "Courier New", monospace;
+  letter-spacing: .08em;
+  margin-bottom: 5px;
+}
+.portfolio-summary strong { font: 700 15px/1 "Courier New", monospace; color: #fff; }
+.portfolio-summary strong em { margin-left: 6px; font-size: 9px; font-style: normal; }
+.portfolio-summary .positive strong, .portfolio-summary .negative strong { color: var(--green); }
+.portfolio-summary .negative strong { color: var(--red); }
+
+.holding-form { margin-bottom: 12px; }
+.holding-fields {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+.holding-fields .btn { height: 26px; }
+.holding-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+}
+.holding-row {
+  display: grid;
+  grid-template-columns: 26px 1fr repeat(5, minmax(64px, auto)) 24px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #0a0a0a;
+}
+.holding-row:last-child { border-bottom: none; }
+.holding-row:hover { background: var(--hl-bg); }
+.holding-main strong { font-size: 12px; color: #fff; display: block; }
+.holding-main small { color: #555; font-size: 9px; }
+.holding-num small { display: block; color: #555; font-size: 8px; letter-spacing: .06em; }
+.holding-num strong { font-size: 11px; color: #ddd; white-space: nowrap; }
+.holding-num strong em { margin-left: 4px; font-size: 9px; font-style: normal; }
+.holding-num.muted strong { color: #666; }
+.holding-num .positive strong { color: var(--green); }
+.holding-num .negative strong { color: var(--red); }
+
+/* ── Alerts modal ── */
+.alert-form { margin-bottom: 12px; }
+.alert-fields {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: start;
+}
+.alert-fields .btn { height: 26px; margin-top: 16px; }
+.alert-current { margin-top: 5px; color: #777; font-size: 10px; }
+.alert-current strong { color: var(--ink); }
+.alert-perm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px dashed #333;
+  background: #070707;
+}
+.alert-perm span { color: #666; font-size: 10px; }
+.alert-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); }
+.alert-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #0a0a0a;
+}
+.alert-row:last-child { border-bottom: none; }
+.alert-row.inactive { opacity: .45; }
+.alert-main { flex: 1; min-width: 0; }
+.alert-main strong { color: #fff; font-size: 12px; margin-right: 8px; }
+.alert-main small { color: #666; font-size: 10px; }
+.alert-main em { color: #888; font-style: normal; }
+.alert-state {
+  padding: 2px 6px;
+  border: 1px solid #2a2a2a;
+  font: 700 8px/1.4 "Courier New", monospace;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.alert-state.armed { border-color: #003b1f; color: var(--green); }
+.alert-state.hit { border-color: var(--amber); color: var(--amber); animation: alertBlink 1s steps(2, start) infinite; }
+.alert-state.done { border-color: #333; color: #666; }
+.toggle {
+  width: 30px;
+  height: 16px;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  background: #111;
+  position: relative;
+  flex: none;
+}
+.toggle i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #555;
+  transition: left .15s, background .15s;
+}
+.toggle.on { border-color: var(--green); background: #062006; }
+.toggle.on i { left: 16px; background: var(--green); box-shadow: 0 0 6px var(--green); }
+@keyframes alertBlink { 50% { opacity: .35; } }
+
+/* ── MASBRO AI modal ── */
+.insight-body { min-width: 340px; }
+.insight-intro { color: #888; font-size: 10px; margin: 8px 0 10px; line-height: 1.5; }
+.insight-intro em { color: #666; font-style: normal; }
+.insight-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 12px;
+  border: 1px solid var(--line);
+  background: #050505;
+  color: var(--amber);
+  font: 700 10px/1 "Courier New", monospace;
+  letter-spacing: .1em;
+}
+.insight-text {
+  margin: 0 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #050505;
+  color: var(--ink);
+  font: 11px/1.6 "Courier New", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ── Toasts ── */
+.toast-stack {
+  position: fixed;
+  right: 12px;
+  bottom: 34px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 340px;
+  padding: 9px 11px;
+  border: 1px solid #333;
+  background: #0c0c0c;
+  color: #ddd;
+  font-size: 11px;
+  line-height: 1.4;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, .55);
+  animation: toastIn .18s ease-out;
+}
+.toast svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
+.toast.alert { border-color: var(--amber); color: #ffe3a3; }
+.toast.alert svg { color: var(--amber); }
+.toast.error { border-color: var(--red); }
+.toast.error svg { color: var(--red); }
+.toast.info svg { color: var(--green); }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 720px) {
+  .holding-fields, .alert-fields { grid-template-columns: 1fr 1fr; }
+  .holding-fields .btn, .alert-fields .btn { margin-top: 0; }
+  .holding-row { grid-template-columns: 26px 1fr repeat(3, minmax(54px, auto)) 24px; }
+  .holding-row .holding-num:nth-of-type(4), .holding-row .holding-num:nth-of-type(5) { display: none; }
+  .portfolio-strip { grid-template-columns: 1fr 1fr; }
+  .portfolio-strip .portfolio-open { display: none; }
+}

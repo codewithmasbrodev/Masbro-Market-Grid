@@ -1,14 +1,39 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BarChart3, Check, Database, GripVertical, LayoutGrid, LoaderCircle, Move, Plus, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Trash2, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BarChart3, Bell, Check, Database, GripVertical, LayoutGrid, LoaderCircle, Move, Plus, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Wallet, X, Zap } from "lucide-react";
 import { api, type WhaleTx } from "./lib/api";
-import { INSTRUMENTS, TIMEFRAMES, type ChartPanel as Panel, type ConnectionStatus, type Dashboard, type Instrument, type MarketSnapshot, type Timeframe } from "./lib/types";
+import { INSTRUMENTS, TIMEFRAMES, type ChartPanel as Panel, type ConnectionStatus, type Dashboard, type InsightResult, type Instrument, type MarketSnapshot, type PortfolioHolding, type PriceAlert, type Timeframe } from "./lib/types";
 import "./styles.css";
+import "./features.css";
 
 const intervalMap: Record<Timeframe, string> = { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1D": "D", "1W": "W" };
 const money = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 });
 const instrumentBySymbol = new Map(INSTRUMENTS.map((instrument) => [instrument.symbol, instrument]));
+const binanceWsSymbol = (symbol: string) => symbol.split(":")[1].toLowerCase();
+const bitfinexWsSymbol = (symbol: string) => `t${symbol.split(":")[1].toUpperCase()}`;
+
+function playAlertSound() {
+  try {
+    const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    for (const [freq, start] of [[880, 0], [1174.66, 0.18], [880, 0.36]] as const) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now + start);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + 0.16);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + start);
+      osc.stop(now + start + 0.2);
+    }
+    window.setTimeout(() => void ctx.close().catch(() => undefined), 1200);
+  } catch { /* audio unavailable */ }
+}
 
 function AssetLogo({ instrument, symbol, size = "normal" }: { instrument?: Instrument; symbol: string; size?: "normal" | "large" }) {
   const [failed, setFailed] = useState(false);
@@ -172,6 +197,123 @@ function LandingPage() {
   </div>;
 }
 
+function PortfolioModal({ holdings, prices, onClose, onSave, onRemove }: { holdings: PortfolioHolding[]; prices: Record<string, MarketSnapshot>; onClose: () => void; onSave: (symbol: string, quantity: number, avgPrice: number) => Promise<void>; onRemove: (id: string) => Promise<void> }) {
+  const [symbol, setSymbol] = useState("BINANCE:BTCUSDT");
+  const [quantity, setQuantity] = useState("1");
+  const [avgPrice, setAvgPrice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const tradables = INSTRUMENTS.filter((item) => item.provider !== "CRYPTOCAP");
+  const rows = holdings.map((h) => {
+    const price = prices[h.symbol]?.price ?? null;
+    const value = price != null ? price * h.quantity : null;
+    const cost = h.avgPrice * h.quantity;
+    const pnl = value != null ? value - cost : null;
+    const pnlPct = cost > 0 && pnl != null ? (pnl / cost) * 100 : null;
+    return { ...h, price, value, cost, pnl, pnlPct };
+  });
+  const totalValue = rows.reduce((sum, row) => sum + (row.value ?? 0), 0);
+  const totalCost = rows.reduce((sum, row) => sum + row.cost, 0);
+  const totalPnl = totalValue - totalCost;
+  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : null;
+  const submit = async () => {
+    const qty = Number(quantity);
+    const avg = Number(avgPrice);
+    if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(avg) || avg <= 0) { setError("Jumlah dan harga beli harus angka positif."); return; }
+    setBusy(true); setError("");
+    try { await onSave(symbol, qty, avg); setQuantity(""); setAvgPrice(""); }
+    catch (e) { setError(e instanceof Error ? e.message : "Gagal menyimpan holding."); }
+    finally { setBusy(false); }
+  };
+  return <Modal title="PORTFOLIO & P&L TRACKER" onClose={onClose}>
+    <div className="portfolio-summary">
+      <div><span>NILAI TOTAL</span><strong>${compact.format(totalValue)}</strong></div>
+      <div><span>MODAL / COST</span><strong>${compact.format(totalCost)}</strong></div>
+      <div className={totalPnl >= 0 ? "positive" : "negative"}><span>UNREALIZED P&L</span><strong>{totalPnl >= 0 ? "+" : ""}${compact.format(totalPnl)}<em>{totalPnlPct != null ? `${totalPnlPct >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}%` : "—"}</em></strong></div>
+    </div>
+    <div className="holding-form">
+      <div className="holding-fields">
+        <div><label className="field-label" htmlFor="holding-symbol">INSTRUMEN</label><select id="holding-symbol" className="select-wide" value={symbol} onChange={(e) => setSymbol(e.target.value)}>{tradables.map((item) => <option key={item.symbol} value={item.symbol}>{item.base}/{item.quote} · {item.provider}</option>)}</select></div>
+        <div><label className="field-label" htmlFor="holding-qty">JUMLAH</label><input id="holding-qty" className="input-dark" type="number" min="0" step="any" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="0.00" /></div>
+        <div><label className="field-label" htmlFor="holding-avg">HARGA BELI</label><input id="holding-avg" className="input-dark" type="number" min="0" step="any" value={avgPrice} onChange={(e) => setAvgPrice(e.target.value)} placeholder="0.00" /></div>
+        <button className="btn primary" onClick={() => void submit()} disabled={busy}>{busy ? <LoaderCircle className="spin" /> : <Plus />} TAMBAH</button>
+      </div>
+      {error && <p className="form-error"><AlertTriangle />{error}</p>}
+    </div>
+    <div className="catalog-label"><span>HOLDINGS</span><span>P&L / POSISI</span></div>
+    {rows.length ? <div className="holding-list">
+      {rows.map((row) => <div className="holding-row" key={row.id}>
+        <AssetLogo instrument={instrumentBySymbol.get(row.symbol)} symbol={row.symbol} />
+        <div className="holding-main"><strong>{row.base}</strong><small>{row.symbol.split(":")[1]}</small></div>
+        <div className="holding-num"><small>HARGA</small><strong>{row.price != null ? `$${money.format(row.price)}` : "—"}</strong></div>
+        <div className="holding-num"><small>JUMLAH</small><strong>{row.quantity}</strong></div>
+        <div className="holding-num"><small>HARGA BELI</small><strong>${money.format(row.avgPrice)}</strong></div>
+        <div className="holding-num"><small>NILAI</small><strong>${compact.format(row.value ?? 0)}</strong></div>
+        <div className={`holding-num ${row.pnl == null ? "muted" : row.pnl >= 0 ? "positive" : "negative"}`}><small>P&L</small><strong>{row.pnl == null ? "—" : `${row.pnl >= 0 ? "+" : ""}$${compact.format(row.pnl)}`}{row.pnlPct != null && <em>{`${row.pnlPct >= 0 ? "+" : ""}${row.pnlPct.toFixed(2)}%`}</em>}</strong></div>
+        <button className="icon-btn danger" onClick={() => void onRemove(row.id)} aria-label={`Hapus ${row.symbol}`}><Trash2 /></button>
+      </div>)}
+    </div> : <p className="modal-empty">Belum ada holding. Tambahkan aset pertama Anda untuk mulai melacak P&L.</p>}
+  </Modal>;
+}
+
+function AlertModal({ alerts, prices, onClose, onCreate, onToggle, onRemove }: { alerts: PriceAlert[]; prices: Record<string, MarketSnapshot>; onClose: () => void; onCreate: (symbol: string, direction: "above" | "below", targetPrice: number) => Promise<void>; onToggle: (alert: PriceAlert) => Promise<void>; onRemove: (id: string) => Promise<void> }) {
+  const [symbol, setSymbol] = useState("BINANCE:BTCUSDT");
+  const [direction, setDirection] = useState<"above" | "below">("above");
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const currentPrice = prices[symbol]?.price;
+  const tradables = INSTRUMENTS.filter((item) => item.provider !== "CRYPTOCAP");
+  const askPermission = () => { if (typeof Notification !== "undefined" && Notification.permission === "default") void Notification.requestPermission(); };
+  const submit = async () => {
+    const value = Number(target);
+    if (!Number.isFinite(value) || value <= 0) { setError("Target harga harus angka positif."); return; }
+    setBusy(true); setError("");
+    try { await onCreate(symbol, direction, value); setTarget(""); askPermission(); }
+    catch (e) { setError(e instanceof Error ? e.message : "Gagal membuat alert."); }
+    finally { setBusy(false); }
+  };
+  return <Modal title="PRICE ALERTS" onClose={onClose}>
+    <div className="alert-form">
+      <div className="alert-fields">
+        <div><label className="field-label" htmlFor="alert-symbol">INSTRUMEN</label><select id="alert-symbol" className="select-wide" value={symbol} onChange={(e) => setSymbol(e.target.value)}>{tradables.map((item) => <option key={item.symbol} value={item.symbol}>{item.base}/{item.quote}</option>)}</select>{currentPrice != null && <p className="alert-current">Harga saat ini: <strong>${money.format(currentPrice)}</strong></p>}</div>
+        <div><label className="field-label" htmlFor="alert-direction">KONDISI</label><select id="alert-direction" className="select-wide" value={direction} onChange={(e) => setDirection(e.target.value as "above" | "below")}><option value="above">Tembus ke ATAS</option><option value="below">Tembus ke BAWAH</option></select></div>
+        <div><label className="field-label" htmlFor="alert-target">HARGA TARGET</label><input id="alert-target" className="input-dark" type="number" min="0" step="any" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="0.00" /></div>
+        <button className="btn primary" onClick={() => void submit()} disabled={busy}>{busy ? <LoaderCircle className="spin" /> : <Bell />} BUAT ALERT</button>
+      </div>
+      {error && <p className="form-error"><AlertTriangle />{error}</p>}
+      {typeof Notification !== "undefined" && Notification.permission === "default" && <div className="alert-perm"><button className="btn ghost" onClick={askPermission}><Bell /> AKTIFKAN NOTIFIKASI BROWSER</button><span>Dapatkan notifikasi walau tab di latar belakang.</span></div>}
+      {typeof Notification !== "undefined" && Notification.permission === "granted" && <p className="alert-current positive">✓ Notifikasi browser AKTIF</p>}
+    </div>
+    <div className="catalog-label"><span>ALERTS</span><span>STATUS</span></div>
+    {alerts.length ? <div className="alert-list">
+      {alerts.map((alert) => {
+        const current = prices[alert.symbol]?.price;
+        const hit = current != null && (alert.direction === "above" ? current >= alert.targetPrice : current <= alert.targetPrice);
+        return <div className={`alert-row ${!alert.active ? "inactive" : ""}`} key={alert.id}>
+          <div className="alert-main"><strong>{alert.symbol.split(":")[1] ?? alert.symbol}</strong><small>{alert.direction === "above" ? "⬆ ATAS" : "⬇ BAWAH"} ${money.format(alert.targetPrice)}{current != null && <em> · SEKARANG ${money.format(current)}</em>}</small></div>
+          <span className={`alert-state ${!alert.active ? "done" : hit ? "hit" : "armed"}`}>{!alert.active ? "TERPICU" : hit ? "TERPENUHI" : "SIAGA"}</span>
+          <button className={`toggle ${alert.active ? "on" : ""}`} onClick={() => void onToggle(alert)} aria-label={alert.active ? "Nonaktifkan alert" : "Aktifkan alert"} title={alert.active ? "Nonaktifkan" : "Aktifkan"}><i /></button>
+          <button className="icon-btn danger" onClick={() => void onRemove(alert.id)} aria-label={`Hapus alert ${alert.symbol}`}><Trash2 /></button>
+        </div>;
+      })}
+    </div> : <p className="modal-empty">Belum ada alert. Atur target harga untuk mulai dipantau.</p>}
+  </Modal>;
+}
+
+function InsightModal({ insight, loading, error, onGenerate, onClose }: { insight: InsightResult | null; loading: boolean; error: string; onGenerate: () => void; onClose: () => void }) {
+  return <Modal title="MASBRO AI — MARKET BRIEF" onClose={onClose}>
+    <div className="insight-body">
+      <p className="insight-intro">Rangkuman pasar real-time dari data grid Anda. <em>{insight?.provider === "openai" ? "Dibuat oleh OpenAI (gpt-4o-mini)." : "Analisis lokal — tambahkan OPENAI_API_KEY untuk brief AI penuh."}</em></p>
+      {loading ? <div className="insight-loading"><LoaderCircle className="spin" /><span>MENGANALISIS PASAR…</span></div>
+        : error ? <p className="form-error"><AlertTriangle />{error}</p>
+        : insight ? <pre className="insight-text">{insight.summary}</pre>
+        : <p className="modal-empty">Klik tombol di bawah untuk membuat market brief terbaru.</p>}
+      <div className="modal-actions"><button className="btn ghost" onClick={onClose}>TUTUP</button><button className="btn primary" onClick={onGenerate} disabled={loading}><Sparkles /> {insight ? "BRIEF BARU" : "BUAT MARKET BRIEF"}</button></div>
+    </div>
+  </Modal>;
+}
+
 function DashboardApp() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [snapshots, setSnapshots] = useState<Record<string, MarketSnapshot>>({});
@@ -185,12 +327,55 @@ function DashboardApp() {
   const [dragged, setDragged] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [whales, setWhales] = useState<WhaleTx[]>([]);
+  const [portfolio, setPortfolio] = useState<PortfolioHolding[]>([]);
+  const [alerts, setAlerts] = useState<PriceAlert[]>([]);
+  const [showPortfolio, setShowPortfolio] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [showInsight, setShowInsight] = useState(false);
+  const [insight, setInsight] = useState<InsightResult | null>(null);
+  const [insightError, setInsightError] = useState("");
+  const [insightLoading, setInsightLoading] = useState(false);
+  const [toasts, setToasts] = useState<{ id: number; text: string; kind: "info" | "alert" | "error" }[]>([]);
   const panelMutationVersion = useRef<Record<string, number>>({});
   const panelMutationQueue = useRef<Record<string, Promise<unknown>>>({});
+  const alertsRef = useRef<PriceAlert[]>([]);
+  const triggeredRef = useRef<Set<string>>(new Set());
+  const toastId = useRef(0);
 
   const load = useCallback(() => { setLoadingError(""); api.dashboard().then(setDashboard).catch((error: Error) => setLoadingError(error.message)); }, []);
   useEffect(load, [load]);
   const symbols = useMemo(() => [...new Set(dashboard?.panels.map((p) => p.symbol) ?? [])], [dashboard]);
+
+  const pushToast = useCallback((text: string, kind: "info" | "alert" | "error" = "info") => {
+    const id = ++toastId.current;
+    setToasts((current) => [...current.slice(-3), { id, text, kind }]);
+    window.setTimeout(() => setToasts((current) => current.filter((t) => t.id !== id)), 6000);
+  }, []);
+
+  // Merge fresh market data into state and check price-alert triggers.
+  const applyLive = useCallback((data: MarketSnapshot[]) => {
+    if (!data.length) return;
+    setSnapshots((current) => ({ ...current, ...Object.fromEntries(data.map((item) => [item.symbol, item])) }));
+    const active = alertsRef.current.filter((alert) => alert.active);
+    if (!active.length) return;
+    for (const alert of active) {
+      const snapshot = data.find((item) => item.symbol === alert.symbol);
+      const price = snapshot?.price;
+      if (price == null || triggeredRef.current.has(alert.id)) continue;
+      const hit = alert.direction === "above" ? price >= alert.targetPrice : price <= alert.targetPrice;
+      if (!hit) continue;
+      triggeredRef.current.add(alert.id);
+      const label = alert.symbol.split(":")[1] ?? alert.symbol;
+      const text = `${label} ${alert.direction === "above" ? "menembus ATAS" : "turun menembus BAWAH"} target $${alert.targetPrice.toLocaleString("en-US")} — sekarang $${price.toLocaleString("en-US")}`;
+      pushToast(text, "alert");
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try { new Notification(`⚠ PRICE ALERT — ${label}`, { body: text }); } catch { /* ignore */ }
+      }
+      playAlertSound();
+      setAlerts((current) => current.map((a) => a.id === alert.id ? { ...a, active: false, triggeredAt: new Date().toISOString() } : a));
+      void api.updateAlert(alert.id, { active: false }).catch(() => undefined);
+    }
+  }, [pushToast]);
   // Vercel has no persistent WebSocket / Durable Object equivalent, so we poll the
   // existing /api/market/snapshot endpoint instead of streaming over a socket.
   useEffect(() => {
@@ -203,7 +388,7 @@ function DashboardApp() {
         const data = await api.snapshots(symbols);
         if (cancelled) return;
         failures = 0;
-        setSnapshots((current) => ({ ...current, ...Object.fromEntries(data.map((item) => [item.symbol, item])) }));
+        applyLive(data);
         setLastUpdate(Date.now());
         setStatus(data.some((item) => item.sourceStatus === "live") ? "live" : "degraded");
       } catch {
@@ -215,7 +400,7 @@ function DashboardApp() {
     void tick(true);
     const poll = window.setInterval(() => void tick(false), 8_000);
     return () => { cancelled = true; clearInterval(poll); };
-  }, [symbols, streamKey]);
+  }, [symbols, streamKey, applyLive]);
   
   // Poll whale transactions
   useEffect(() => {
@@ -230,6 +415,95 @@ function DashboardApp() {
     const interval = window.setInterval(fetchWhales, 15000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+
+  // Load portfolio holdings + price alerts for this device
+  useEffect(() => {
+    api.portfolio().then(setPortfolio).catch(() => undefined);
+    api.alerts().then((data) => { setAlerts(data); alertsRef.current = data; }).catch(() => undefined);
+  }, []);
+  useEffect(() => { alertsRef.current = alerts; }, [alerts]);
+
+  // Real-time WebSocket feeds (Binance + Bitfinex) straight from the browser,
+  // with the 8s polling above kept as an automatic fallback.
+  useEffect(() => {
+    if (!symbols.length) return;
+    let closed = false;
+    let currentSockets: WebSocket[] = [];
+    let bitfinexChannels = new Map<number, string>();
+    const binanceSymbols = symbols.filter((s) => s.startsWith("BINANCE:"));
+    const bitfinexSymbols = symbols.filter((s) => s.startsWith("BITFINEX:"));
+    if (!binanceSymbols.length && !bitfinexSymbols.length) return;
+
+    const connect = () => {
+      for (const ws of currentSockets) { try { ws.close(); } catch { /* ignore */ } }
+      currentSockets = [];
+      bitfinexChannels = new Map();
+      if (binanceSymbols.length) {
+        try {
+          const stream = binanceSymbols.map((s) => `${binanceWsSymbol(s)}@miniTicker`).join("/");
+          const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${stream}`);
+          currentSockets.push(ws);
+          let opened = false;
+          ws.onopen = () => { opened = true; setStatus("live"); };
+          ws.onmessage = (event) => {
+            try {
+              const message = JSON.parse(event.data as string) as { stream?: string; data?: { s?: string; c?: string; o?: string; v?: string } };
+              const data = message.data;
+              if (!message.stream || !data?.s || !data.c) return;
+              const price = Number(data.c);
+              if (!Number.isFinite(price) || price <= 0) return;
+              const open = Number(data.o);
+              const change = open > 0 ? ((price - open) / open) * 100 : null;
+              applyLive([{ symbol: `BINANCE:${data.s}`, price, change24h: change, volume24h: Number(data.v ?? 0), timestamp: Date.now(), stale: false, sourceStatus: "live" }]);
+            } catch { /* malformed frame */ }
+          };
+          ws.onerror = () => { if (opened) setStatus("reconnecting"); };
+          ws.onclose = () => { if (!closed && opened) setStatus("reconnecting"); };
+        } catch { /* ws unavailable */ }
+      }
+      if (bitfinexSymbols.length) {
+        try {
+          const ws = new WebSocket("wss://api-pub.bitfinex.com/ws/2");
+          currentSockets.push(ws);
+          ws.onopen = () => {
+            setStatus("live");
+            for (const symbol of bitfinexSymbols) {
+              ws.send(JSON.stringify({ event: "subscribe", channel: "ticker", symbol: bitfinexWsSymbol(symbol) }));
+            }
+          };
+          ws.onmessage = (event) => {
+            try {
+              const message = JSON.parse(event.data as string) as unknown;
+              if (Array.isArray(message) && typeof message[0] === "number") {
+                const symbol = bitfinexChannels.get(message[0]);
+                const tick = message[1] as number[] | undefined;
+                if (!symbol || !Array.isArray(tick)) return;
+                const price = tick[6];
+                const change = tick[5];
+                if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return;
+                applyLive([{ symbol, price, change24h: typeof change === "number" ? change * 100 : null, volume24h: typeof tick[7] === "number" ? tick[7] : null, timestamp: Date.now(), stale: false, sourceStatus: "live" }]);
+              } else if (message && typeof message === "object" && (message as { event?: string }).event === "subscribed" && typeof (message as { chanId?: number }).chanId === "number") {
+                const sub = message as { chanId: number; symbol: string };
+                bitfinexChannels.set(sub.chanId, sub.symbol.replace("t", "BITFINEX:"));
+              }
+            } catch { /* malformed frame */ }
+          };
+          ws.onerror = () => setStatus("reconnecting");
+          ws.onclose = () => { if (!closed) setStatus("reconnecting"); };
+        } catch { /* ws unavailable */ }
+      }
+    };
+
+    connect();
+    const keepalive = window.setInterval(() => {
+      if (currentSockets.length && currentSockets.every((ws) => ws.readyState === WebSocket.CLOSED)) connect();
+    }, 12000);
+    return () => {
+      closed = true;
+      clearInterval(keepalive);
+      for (const ws of currentSockets) { try { ws.close(); } catch { /* ignore */ } }
+    };
+  }, [symbols, streamKey, applyLive]);
 
   const saveLayout = async (panels: Panel[], columns = dashboard?.columns ?? 2) => {
     if (!dashboard) return;
@@ -278,6 +552,51 @@ function DashboardApp() {
     finally { setSaving(false); setActivePanel(null); }
   };
 
+  const portfolioValue = useMemo(() => portfolio.reduce((sum, h) => sum + (snapshots[h.symbol]?.price ?? 0) * h.quantity, 0), [portfolio, snapshots]);
+  const portfolioCost = useMemo(() => portfolio.reduce((sum, h) => sum + h.avgPrice * h.quantity, 0), [portfolio]);
+  const portfolioPnl = portfolioValue - portfolioCost;
+  const portfolioPnlPct = portfolioCost > 0 ? (portfolioPnl / portfolioCost) * 100 : null;
+  const activeAlertCount = alerts.filter((alert) => alert.active).length;
+
+  const saveHolding = useCallback(async (symbol: string, quantity: number, avgPrice: number) => {
+    const saved = await api.saveHolding({ symbol, quantity, avgPrice });
+    setPortfolio((current) => [...current.filter((h) => h.symbol !== symbol), saved].sort((a, b) => a.symbol.localeCompare(b.symbol)));
+    pushToast(`${symbol.split(":")[1] ?? symbol} tersimpan di portfolio.`, "info");
+  }, [pushToast]);
+
+  const removeHolding = useCallback(async (id: string) => {
+    await api.removeHolding(id);
+    setPortfolio((current) => current.filter((h) => h.id !== id));
+    pushToast("Holding dihapus.", "info");
+  }, [pushToast]);
+
+  const createAlert = useCallback(async (symbol: string, direction: "above" | "below", targetPrice: number) => {
+    const created = await api.createAlert({ symbol, direction, targetPrice });
+    setAlerts((current) => [...current, created]);
+    pushToast(`Alert ${symbol.split(":")[1] ?? symbol} dibuat.`, "info");
+  }, [pushToast]);
+
+  const toggleAlert = useCallback(async (alert: PriceAlert) => {
+    const updated = await api.updateAlert(alert.id, { active: !alert.active });
+    if (updated.active) triggeredRef.current.delete(alert.id);
+    setAlerts((current) => current.map((a) => a.id === alert.id ? updated : a));
+    pushToast(updated.active ? "Alert diaktifkan kembali." : "Alert dinonaktifkan.", "info");
+  }, [pushToast]);
+
+  const removeAlert = useCallback(async (id: string) => {
+    await api.removeAlert(id);
+    setAlerts((current) => current.filter((a) => a.id !== id));
+    triggeredRef.current.delete(id);
+    pushToast("Alert dihapus.", "info");
+  }, [pushToast]);
+
+  const generateInsight = useCallback(async () => {
+    setInsightLoading(true); setInsightError("");
+    try { setInsight(await api.insight(symbols)); }
+    catch (error) { setInsightError(error instanceof Error ? error.message : "Gagal menghasilkan brief."); }
+    finally { setInsightLoading(false); }
+  }, [symbols]);
+
   if (loadingError) return <main className="center-state"><AlertTriangle /><h1>DASHBOARD TIDAK TERJANGKAU</h1><p>{loadingError}</p><button className="btn primary" onClick={load}><RefreshCw /> COBA LAGI</button></main>;
   if (!dashboard) return <main className="center-state"><LoaderCircle className="spin" /><h1>MENYUSUN MARKET GRID</h1><p>Memuat panel dan menghubungkan feed pasar…</p></main>;
 
@@ -303,6 +622,9 @@ function DashboardApp() {
     <header className="topbar">
       <Brand href="/" />
       <div className="top-actions">
+        <button className="btn ghost alert-bell" onClick={() => setShowAlerts(true)} title="Price alerts"><Bell /><span className="btn-label">ALERTS</span>{activeAlertCount > 0 && <span className="badge">{activeAlertCount}</span>}</button>
+        <button className="btn ghost" onClick={() => setShowPortfolio(true)} title="Portfolio & PnL"><Wallet /><span className="btn-label">PORTFOLIO</span></button>
+        <button className="btn ghost ai-btn" onClick={() => { setShowInsight(true); void generateInsight(); }} title="MASBRO AI — Market brief"><Sparkles /><span className="btn-label">MASBRO AI</span></button>
         <ConnectionBadge status={status} onRetry={() => setStreamKey((v) => v + 1)} />
         <span className="updated">LAST<strong>{lastUpdate ? new Date(lastUpdate).toLocaleTimeString("id-ID") : "—"}</strong></span>
         <button className="btn primary" onClick={() => setModal("add")}><Plus /> <span>ADD</span></button>
@@ -323,6 +645,15 @@ function DashboardApp() {
           <span className={saving ? "saving active" : "saving"}>{saving ? "SAVE…" : "SAVED"}</span>
         </div>
       </section>
+
+      {portfolio.length > 0 && (
+        <section className="portfolio-strip" aria-label="Ringkasan portfolio">
+          <div><span>NILAI PORTFOLIO</span><strong>${compact.format(portfolioValue)}</strong></div>
+          <div><span>MODAL / COST</span><strong>${compact.format(portfolioCost)}</strong></div>
+          <div className={portfolioPnl >= 0 ? "positive" : "negative"}><span>UNREALIZED P&L</span><strong>{portfolioPnl >= 0 ? "+" : ""}{compact.format(portfolioPnl)}<em>{portfolioPnlPct == null ? "" : `${portfolioPnlPct >= 0 ? "+" : ""}${portfolioPnlPct.toFixed(2)}%`}</em></strong></div>
+          <div className="portfolio-open"><button className="btn ghost" onClick={() => setShowPortfolio(true)}><Wallet /> KELOLA</button></div>
+        </section>
+      )}
 
       {/* Market Grid */}
       {dashboard.panels.length ? (
@@ -350,6 +681,10 @@ function DashboardApp() {
     {modal === "add" && <InstrumentSearch onClose={() => setModal(null)} onAdd={async (instrument, timeframe) => { const added = await api.addPanel(instrument.provider, instrument.symbol, timeframe); setDashboard((current) => current ? { ...current, panels: [...current.panels, added] } : current); setAnnouncement(`${instrument.symbol} ditambahkan.`); }} />}
     {modal === "edit" && activePanel && <InstrumentSearch initial={activePanel} onClose={() => setModal(null)} onAdd={async (instrument, timeframe) => mutatePanel(activePanel, { provider: instrument.provider, symbol: instrument.symbol, timeframe })} />}
     {modal === "delete" && activePanel && <Modal title="HAPUS CHART?" onClose={() => setModal(null)}><div className="confirm-copy"><AssetLogo instrument={instrumentBySymbol.get(activePanel.symbol)} symbol={activePanel.symbol} size="large" /><p><strong>{activePanel.symbol}</strong> akan dihapus dari grid. Tindakan ini tidak dapat dibatalkan.</p></div><div className="modal-actions"><button className="btn ghost" onClick={() => setModal(null)}>BATAL</button><button className="btn destructive" onClick={() => void remove()}><Trash2 /> HAPUS</button></div></Modal>}
+    {showPortfolio && <PortfolioModal holdings={portfolio} prices={snapshots} onClose={() => setShowPortfolio(false)} onSave={saveHolding} onRemove={removeHolding} />}
+    {showAlerts && <AlertModal alerts={alerts} prices={snapshots} onClose={() => setShowAlerts(false)} onCreate={createAlert} onToggle={toggleAlert} onRemove={removeAlert} />}
+    {showInsight && <InsightModal insight={insight} loading={insightLoading} error={insightError} onGenerate={() => void generateInsight()} onClose={() => setShowInsight(false)} />}
+    {toasts.length > 0 && <div className="toast-stack" role="status" aria-live="polite">{toasts.map((toast) => <div key={toast.id} className={`toast ${toast.kind}`}>{toast.kind === "alert" ? <Bell /> : toast.kind === "error" ? <AlertTriangle /> : <Check />}<span>{toast.text}</span></div>)}</div>}
   </div>;
 }
 

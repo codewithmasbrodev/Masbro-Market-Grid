@@ -1,6 +1,6 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { getDb } from "../src/db/client";
-import { chartPanels, dashboards } from "../src/db/schema";
+import { chartPanels, dashboards, portfolioHoldings, priceAlerts } from "../src/db/schema";
 import { INSTRUMENTS, TIMEFRAMES, type ChartPanel, type Dashboard, type MarketSnapshot, type Provider, type Timeframe } from "../src/lib/types";
 
 // Runs as a Vercel Edge Function (standard Fetch API), so most of the original
@@ -250,6 +250,80 @@ async function marketSnapshot(symbol: string): Promise<MarketSnapshot> {
   } catch { return unavailable(); }
 }
 
+// ── Dev-friendly schema bootstrap ──
+// Production runs Drizzle migrations (migrations/*.sql). The local SQLite dev
+// database is brand new each environment, so we mirror the same schema with
+// CREATE IF NOT EXISTS — harmless in production, essential in dev.
+let ensured = false;
+async function ensureTables() {
+  if (ensured) return;
+  const db = getDb();
+  const statements = [
+    sql`CREATE TABLE IF NOT EXISTS dashboards (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT 'MY MARKET GRID', columns INTEGER NOT NULL DEFAULT 2, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    sql`CREATE TABLE IF NOT EXISTS chart_panels (id TEXT PRIMARY KEY NOT NULL, dashboard_id TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE, provider TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '1h', position INTEGER NOT NULL, span INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    sql`CREATE INDEX IF NOT EXISTS chart_panels_dashboard_position_idx ON chart_panels(dashboard_id, position)`,
+    sql`CREATE TABLE IF NOT EXISTS portfolio_holdings (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL, symbol TEXT NOT NULL, base TEXT NOT NULL, quantity REAL NOT NULL, avg_price REAL NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS portfolio_holdings_owner_symbol_idx ON portfolio_holdings(owner_hash, symbol)`,
+    sql`CREATE TABLE IF NOT EXISTS price_alerts (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL, symbol TEXT NOT NULL, direction TEXT NOT NULL, target_price REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, triggered_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    sql`CREATE INDEX IF NOT EXISTS price_alerts_owner_active_idx ON price_alerts(owner_hash, active)`,
+  ];
+  for (const statement of statements) await db.run(statement);
+  ensured = true;
+}
+
+// ── AI Market Brief (optional OpenAI, local fallback without a key) ──
+async function generateInsight(symbols: string[]): Promise<{ summary: string; provider: "openai" | "local"; generatedAt: number }> {
+  const generatedAt = Date.now();
+  const snapshots = await Promise.all(symbols.slice(0, 16).map((symbol) => marketSnapshot(symbol)));
+  const priced = snapshots.filter((item) => item.price != null && item.change24h != null);
+  const context = snapshots.map((s) => {
+    const name = s.symbol.split(":")[1] ?? s.symbol;
+    return `${name}: ${s.price == null ? "N/A" : "$" + s.price.toLocaleString("en-US", { maximumFractionDigits: 2 })} (${s.change24h == null ? "n/a" : (s.change24h >= 0 ? "+" : "") + s.change24h.toFixed(2) + "%"})`;
+  }).join("\n");
+
+  const localBrief = () => {
+    const sorted = [...priced].sort((a, b) => (b.change24h ?? 0) - (a.change24h ?? 0));
+    const gainers = sorted.slice(0, 3).map((s) => `${s.symbol.split(":")[1] ?? s.symbol} +${(s.change24h ?? 0).toFixed(2)}%`).join(", ");
+    const losers = [...sorted].reverse().slice(0, 3).map((s) => `${s.symbol.split(":")[1] ?? s.symbol} ${(s.change24h ?? 0).toFixed(2)}%`).join(", ");
+    const avg = priced.length ? priced.reduce((sum, s) => sum + (s.change24h ?? 0), 0) / priced.length : 0;
+    const trend = avg > 1 ? "bullish" : avg < -1 ? "bearish" : "sideways";
+    return [
+      `MARKET BRIEF // ${new Date(generatedAt).toLocaleString("id-ID", { timeZone: "UTC" })} UTC`,
+      `Rata-rata pergerakan 24 jam ${priced.length} instrumen: ${avg >= 0 ? "+" : ""}${avg.toFixed(2)}% (${trend.toUpperCase()}).`,
+      gainers ? `PEMIMPIN: ${gainers}` : null,
+      losers ? `TERTINGGAL: ${losers}` : null,
+      "",
+      "Catatan: ini analisis lokal real-time dari data grid Anda. Tambahkan OPENAI_API_KEY untuk market brief AI berbahasa Indonesia yang lebih dalam.",
+    ].filter(Boolean).join("\n");
+  };
+
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return { summary: localBrief(), provider: "local", generatedAt };
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.7,
+        max_tokens: 600,
+        messages: [
+          { role: "system", content: "Kamu adalah analis pasar kripto yang ringkas dan tajam. Tulis dalam Bahasa Indonesia, gaya Bloomberg terminal: singkat, padat, tanpa basa-basi. Gunakan huruf kapital untuk label seksi." },
+          { role: "user", content: `Berikut data harga terkini instrumen (nama: harga, perubahan 24 jam):\n${context}\n\nBuat "market brief" singkat (maks 150 kata): rangkum arah pasar, sebutkan aset paling kuat dan paling lemah, lalu beri 1-2 observasi singkat.` },
+        ],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`OpenAI ${response.status}`);
+    const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+    const summary = data.choices?.[0]?.message?.content?.trim();
+    if (!summary) throw new Error("OpenAI kosong.");
+    return { summary, provider: "openai", generatedAt };
+  } catch {
+    return { summary: localBrief(), provider: "local", generatedAt };
+  }
+}
+
 // All routes use single-level paths because Vercel edge catch-all ([...path].ts)
 // does not reliably route multi-level paths. Keep api endpoints flat.
 export default async function handler(request: Request): Promise<Response> {
@@ -257,7 +331,7 @@ export default async function handler(request: Request): Promise<Response> {
   const securityHeaders = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
 
   if (url.pathname === "/api/health") {
-    try { await getDb().select().from(dashboards).limit(1); return json({ ok: true, database: "available", feed: "available" }, 200, securityHeaders); }
+    try { await ensureTables(); await getDb().select().from(dashboards).limit(1); return json({ ok: true, database: "available", feed: "available" }, 200, securityHeaders); }
     catch { return json({ ok: false, database: "unavailable", feed: "available" }, 503, securityHeaders); }
   }
   if (url.pathname === "/api/instruments" && request.method === "GET") {
@@ -277,6 +351,7 @@ export default async function handler(request: Request): Promise<Response> {
     const identity = await owner(request);
     const headers = new Headers(securityHeaders);
     if (identity.cookie) headers.set("set-cookie", identity.cookie);
+    await ensureTables();
     return json(await fullDashboard(identity.hash), 200, headers);
   }
   
@@ -285,6 +360,7 @@ export default async function handler(request: Request): Promise<Response> {
   const headers = new Headers(securityHeaders);
   if (identity.cookie) headers.set("set-cookie", identity.cookie);
   
+  await ensureTables();
   const dashboard = await ensureDashboard(identity.hash);
   const db = getDb();
   
@@ -335,6 +411,84 @@ export default async function handler(request: Request): Promise<Response> {
       const updated = (await db.select().from(chartPanels).where(eq(chartPanels.id, panelId)).limit(1))[0];
       return json(panelResponse(updated), 200, headers);
     }
+  }
+
+  // ── Portfolio holdings (PnL tracker) ──
+  if (url.pathname === "/api/portfolio") {
+    if (request.method === "GET") {
+      const rows = await db.select().from(portfolioHoldings).where(eq(portfolioHoldings.ownerHash, identity.hash)).orderBy(asc(portfolioHoldings.symbol));
+      return json(rows.map((row) => ({ id: row.id, symbol: row.symbol, base: row.base, quantity: row.quantity, avgPrice: row.avgPrice, createdAt: row.createdAt, updatedAt: row.updatedAt })), 200, headers);
+    }
+    if (request.method === "POST") {
+      const body = await parseBody(request);
+      const instrument = INSTRUMENTS.find((item) => item.symbol === body?.symbol);
+      const quantity = Number(body?.quantity);
+      const avgPrice = Number(body?.avgPrice);
+      if (!instrument || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(avgPrice) || avgPrice <= 0) return error("Data holding tidak valid.", 422);
+      const now = new Date().toISOString();
+      const existing = (await db.select().from(portfolioHoldings).where(and(eq(portfolioHoldings.ownerHash, identity.hash), eq(portfolioHoldings.symbol, instrument.symbol))).limit(1))[0];
+      let row;
+      if (existing) {
+        await db.update(portfolioHoldings).set({ quantity, avgPrice, updatedAt: now }).where(eq(portfolioHoldings.id, existing.id));
+        row = { ...existing, quantity, avgPrice, updatedAt: now };
+      } else {
+        row = { id: crypto.randomUUID(), ownerHash: identity.hash, symbol: instrument.symbol, base: instrument.base, quantity, avgPrice, createdAt: now, updatedAt: now };
+        await db.insert(portfolioHoldings).values(row);
+      }
+      return json({ id: row.id, symbol: row.symbol, base: row.base, quantity: row.quantity, avgPrice: row.avgPrice, createdAt: row.createdAt, updatedAt: row.updatedAt }, 200, headers);
+    }
+    if (request.method === "DELETE") {
+      const id = url.searchParams.get("id");
+      if (!id) return error("Parameter holding id diperlukan.", 422);
+      await db.delete(portfolioHoldings).where(and(eq(portfolioHoldings.id, id), eq(portfolioHoldings.ownerHash, identity.hash)));
+      return json({ ok: true }, 200, headers);
+    }
+  }
+
+  // ── Price alerts ──
+  if (url.pathname === "/api/alerts") {
+    if (request.method === "GET") {
+      const rows = await db.select().from(priceAlerts).where(eq(priceAlerts.ownerHash, identity.hash)).orderBy(asc(priceAlerts.createdAt));
+      return json(rows.map((row) => ({ id: row.id, symbol: row.symbol, direction: row.direction, targetPrice: row.targetPrice, active: row.active === 1, triggeredAt: row.triggeredAt, createdAt: row.createdAt })), 200, headers);
+    }
+    if (request.method === "POST") {
+      const body = await parseBody(request);
+      const instrument = INSTRUMENTS.find((item) => item.symbol === body?.symbol);
+      const direction = body?.direction;
+      const targetPrice = Number(body?.targetPrice);
+      if (!instrument || (direction !== "above" && direction !== "below") || !Number.isFinite(targetPrice) || targetPrice <= 0) return error("Data alert tidak valid.", 422);
+      const row = { id: crypto.randomUUID(), ownerHash: identity.hash, symbol: instrument.symbol, direction, targetPrice, active: 1, triggeredAt: null, createdAt: new Date().toISOString() };
+      await db.insert(priceAlerts).values(row);
+      return json({ id: row.id, symbol: row.symbol, direction: row.direction, targetPrice: row.targetPrice, active: true, triggeredAt: null, createdAt: row.createdAt }, 201, headers);
+    }
+    if (request.method === "PUT") {
+      const body = await parseBody(request);
+      const id = typeof body?.id === "string" ? body.id : null;
+      if (!id) return error("Parameter alert id diperlukan.", 422);
+      const current = (await db.select().from(priceAlerts).where(and(eq(priceAlerts.id, id), eq(priceAlerts.ownerHash, identity.hash))).limit(1))[0];
+      if (!current) return error("Alert tidak ditemukan.", 404);
+      const direction = body?.direction ?? current.direction;
+      const targetPrice = body?.targetPrice === undefined ? current.targetPrice : Number(body?.targetPrice);
+      const active = body?.active === undefined ? current.active : (body?.active ? 1 : 0);
+      if ((direction !== "above" && direction !== "below") || !Number.isFinite(targetPrice) || targetPrice <= 0 || (active !== 0 && active !== 1)) return error("Perubahan alert tidak valid.", 422);
+      await db.update(priceAlerts).set({ direction, targetPrice, active, triggeredAt: active === 1 ? null : (current.triggeredAt ?? new Date().toISOString()), }).where(eq(priceAlerts.id, id));
+      const updated = (await db.select().from(priceAlerts).where(eq(priceAlerts.id, id)).limit(1))[0];
+      return json({ id: updated.id, symbol: updated.symbol, direction: updated.direction, targetPrice: updated.targetPrice, active: updated.active === 1, triggeredAt: updated.triggeredAt, createdAt: updated.createdAt }, 200, headers);
+    }
+    if (request.method === "DELETE") {
+      const id = url.searchParams.get("id");
+      if (!id) return error("Parameter alert id diperlukan.", 422);
+      await db.delete(priceAlerts).where(and(eq(priceAlerts.id, id), eq(priceAlerts.ownerHash, identity.hash)));
+      return json({ ok: true }, 200, headers);
+    }
+  }
+
+  // ── AI Market Brief ──
+  if (url.pathname === "/api/insight" && request.method === "POST") {
+    const body = await parseBody(request);
+    const requested = Array.isArray(body?.symbols) ? body.symbols.filter((item): item is string => typeof item === "string") : [];
+    const symbols = [...new Set(requested)].filter((symbol) => INSTRUMENTS.some((item) => item.symbol === symbol)).slice(0, 16);
+    return json(await generateInsight(symbols), 200, securityHeaders);
   }
   
   return error("Endpoint tidak ditemukan.", 404);

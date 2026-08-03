@@ -38,6 +38,34 @@ export interface MarketSnapshot {
   sourceStatus: "live" | "stale" | "unavailable";
 }
 
+export interface PortfolioHolding {
+  id: string;
+  symbol: string;
+  base: string;
+  quantity: number;
+  avgPrice: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AlertDirection = "above" | "below";
+
+export interface PriceAlert {
+  id: string;
+  symbol: string;
+  direction: AlertDirection;
+  targetPrice: number;
+  active: boolean;
+  triggeredAt: string | null;
+  createdAt: string;
+}
+
+export interface InsightResult {
+  summary: string;
+  provider: "openai" | "local";
+  generatedAt: number;
+}
+
 export type ClientStreamMessage =
   | { type: "subscribe"; symbols: string[] }
   | { type: "ping" };

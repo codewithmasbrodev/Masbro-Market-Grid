@@ -1,4 +1,4 @@
-import type { ChartPanel, Dashboard, Instrument, MarketSnapshot, Provider, Timeframe } from "./types";
+import type { ChartPanel, Dashboard, InsightResult, Instrument, MarketSnapshot, PortfolioHolding, PriceAlert, Provider, Timeframe } from "./types";
 
 export interface WhaleTx {
   id: string;
@@ -46,4 +46,16 @@ export const api = {
   removePanel: (id: string) => request<{ ok: true }>(`/api/panel?id=${id}`, { method: "DELETE" }),
   saveLayout: (columns: number, panelIds: string[]) =>
     request<{ ok: true }>("/api/layout", jsonInit("PUT", { columns, panelIds })),
+  portfolio: () => request<PortfolioHolding[]>("/api/portfolio"),
+  saveHolding: (holding: { symbol: string; quantity: number; avgPrice: number }) =>
+    request<PortfolioHolding>("/api/portfolio", jsonInit("POST", holding)),
+  removeHolding: (id: string) => request<{ ok: true }>(`/api/portfolio?id=${id}`, { method: "DELETE" }),
+  alerts: () => request<PriceAlert[]>("/api/alerts"),
+  createAlert: (alert: { symbol: string; direction: "above" | "below"; targetPrice: number }) =>
+    request<PriceAlert>("/api/alerts", jsonInit("POST", alert)),
+  updateAlert: (id: string, changes: Partial<Pick<PriceAlert, "active" | "direction" | "targetPrice">>) =>
+    request<PriceAlert>("/api/alerts", jsonInit("PUT", { id, ...changes })),
+  removeAlert: (id: string) => request<{ ok: true }>(`/api/alerts?id=${id}`, { method: "DELETE" }),
+  insight: (symbols: string[]) =>
+    request<InsightResult>("/api/insight", jsonInit("POST", { symbols })),
 };
