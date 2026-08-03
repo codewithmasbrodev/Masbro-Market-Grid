@@ -3,12 +3,12 @@ import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core
 
 export const dashboards = sqliteTable("dashboards", {
   id: text("id").primaryKey(),
-  ownerHash: text("owner_hash").notNull().unique(),
+  ownerHash: text("owner_hash").notNull(),
   name: text("name").notNull().default("MY MARKET GRID"),
   columns: integer("columns").notNull().default(2),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [index("dashboards_owner_hash_idx").on(table.ownerHash)]);
 
 export const chartPanels = sqliteTable("chart_panels", {
   id: text("id").primaryKey(),

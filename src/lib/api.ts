@@ -1,4 +1,4 @@
-import type { ChartPanel, Dashboard, InsightResult, Instrument, MarketSnapshot, PortfolioHolding, PriceAlert, Provider, Timeframe } from "./types";
+import type { ChartPanel, Dashboard, InsightResult, Instrument, Kline, MarketSnapshot, PortfolioHolding, PriceAlert, Provider, SentimentData, Timeframe, Workspace } from "./types";
 
 export interface WhaleTx {
   id: string;
@@ -53,9 +53,19 @@ export const api = {
   alerts: () => request<PriceAlert[]>("/api/alerts"),
   createAlert: (alert: { symbol: string; direction: "above" | "below"; targetPrice: number }) =>
     request<PriceAlert>("/api/alerts", jsonInit("POST", alert)),
-  updateAlert: (id: string, changes: Partial<Pick<PriceAlert, "active" | "direction" | "targetPrice">>) =>
+  updateAlert: (id: string, changes: Partial<Pick<PriceAlert, "active" | "direction" | "targetPrice" | "triggeredAt">>) =>
     request<PriceAlert>("/api/alerts", jsonInit("PUT", { id, ...changes })),
   removeAlert: (id: string) => request<{ ok: true }>(`/api/alerts?id=${id}`, { method: "DELETE" }),
   insight: (symbols: string[]) =>
     request<InsightResult>("/api/insight", jsonInit("POST", { symbols })),
+  workspaces: () => request<Workspace[]>("/api/workspaces"),
+  createWorkspace: (name?: string) =>
+    request<{ id: string; name: string }>("/api/workspaces", jsonInit("POST", { name })),
+  deleteWorkspace: (id: string) =>
+    request<{ ok: true }>(`/api/workspaces?id=${id}`, { method: "DELETE" }),
+  switchWorkspace: (id: string) =>
+    request<{ ok: true }>("/api/workspace-switch", jsonInit("POST", { id })),
+  sentiment: () => request<SentimentData>("/api/sentiment"),
+  klines: (symbol: string, timeframe: Timeframe, limit = 200) =>
+    request<Kline[]>(`/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&limit=${limit}`),
 };

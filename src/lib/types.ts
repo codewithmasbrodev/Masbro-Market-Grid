@@ -66,6 +66,41 @@ export interface InsightResult {
   generatedAt: number;
 }
 
+export interface Workspace {
+  id: string;
+  name: string;
+  columns: number;
+  panelCount: number;
+  updatedAt: string;
+}
+
+export interface Kline {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface FearGreed {
+  value: number;
+  classification: string;
+  updatedAt: number;
+}
+
+export interface FundingRate {
+  symbol: string;
+  lastFundingRate: number;
+  markPrice: number;
+  nextFundingTime: number;
+}
+
+export interface SentimentData {
+  fearGreed: FearGreed | null;
+  funding: FundingRate[];
+}
+
 export type ClientStreamMessage =
   | { type: "subscribe"; symbols: string[] }
   | { type: "ping" };

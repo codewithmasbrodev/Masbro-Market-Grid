@@ -300,3 +300,257 @@
   .portfolio-strip { grid-template-columns: 1fr 1fr; }
   .portfolio-strip .portfolio-open { display: none; }
 }
+
+/* =====================================================
+   FEATURE WAVE 2 — shortcuts, sentiment, workspaces,
+   real candlestick chart, screener
+   ===================================================== */
+
+/* ── Bloomberg tabs as buttons ── */
+.app-shell .bb-tabs .tab { user-select: none; }
+.app-shell .bb-tabs .tab:hover { color: var(--ink); background: #080808; }
+.app-shell .bb-tabs .tab.hint {
+  margin-left: auto;
+  padding: 0 8px;
+  color: #3d4a3d;
+  font-size: 9px;
+  gap: 5px;
+  letter-spacing: .04em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.app-shell .bb-tabs .tab.hint svg { width: 11px; height: 11px; color: var(--amber); }
+@media (max-width: 900px) { .app-shell .bb-tabs .tab.hint { display: none; } }
+
+/* ── Workspace selector ── */
+.workspace-control { display: flex; align-items: center; gap: 4px; margin-right: 12px; }
+.workspace-control label {
+  display: flex; align-items: center; gap: 4px;
+  color: #555; font: 700 9px/1 "Courier New", monospace; letter-spacing: .08em;
+}
+.workspace-control label svg { width: 12px; height: 12px; }
+.workspace-control select {
+  height: 22px;
+  max-width: 150px;
+  padding: 0 4px;
+  border: 1px solid #2a2a2a;
+  background: #060606;
+  color: var(--ink);
+  font: 700 10px/1 "Courier New", monospace;
+  outline: none;
+  cursor: pointer;
+}
+.workspace-control select:focus { border-color: var(--green); }
+.workspace-control .icon-btn { width: 22px; height: 22px; border: 1px solid #2a2a2a; display: inline-flex; align-items: center; justify-content: center; color: #888; }
+.workspace-control .icon-btn:hover { color: var(--green); border-color: var(--green); }
+.workspace-control .icon-btn.danger:hover { color: var(--red); border-color: var(--red); }
+.workspace-control .icon-btn svg { width: 12px; height: 12px; }
+.workspace-control .icon-btn:disabled { opacity: .35; pointer-events: none; }
+@media (max-width: 720px) { .workspace-control { margin-right: 6px; } .workspace-control select { max-width: 96px; } }
+
+/* ── Sentiment strip (Fear & Greed + Funding) ── */
+.sentiment-strip {
+  display: grid;
+  grid-template-columns: 1.2fr 2fr;
+  gap: 1px;
+  margin: 0 0 4px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+.fng-cell, .funding-cell { padding: 6px 10px; background: #0a0a0a; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.sent-label {
+  color: #555;
+  font: 700 8px/1 "Courier New", monospace;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+.fng-bar {
+  flex: 1;
+  min-width: 60px;
+  height: 8px;
+  border: 1px solid #222;
+  background: #050505;
+  position: relative;
+  overflow: hidden;
+}
+.fng-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #7a4a00, var(--amber));
+  transition: width .6s ease;
+}
+.fng-bar i.fear { background: linear-gradient(90deg, #5a0f0f, var(--red)); }
+.fng-bar i.greedy { background: linear-gradient(90deg, #0a5a2a, var(--green)); }
+.fng-cell strong { font: 700 15px/1 "Courier New", monospace; color: var(--amber); }
+.fng-cell strong.positive { color: var(--green); }
+.fng-cell strong.negative { color: var(--red); }
+.fng-cell em { font-style: normal; font-size: 9px; color: #777; white-space: nowrap; }
+.sent-na { color: #444; font-size: 10px; }
+.funding-cell { flex-wrap: wrap; gap: 4px 12px; }
+.funding-list { display: flex; gap: 14px; flex-wrap: wrap; }
+.funding-list span { display: flex; align-items: baseline; gap: 4px; }
+.funding-list b { color: #ccc; font-size: 10px; }
+.funding-list em { font-style: normal; font-size: 10px; }
+@media (max-width: 720px) {
+  .sentiment-strip { grid-template-columns: 1fr; }
+  .sent-label { display: none; }
+}
+
+/* ── Real candlestick modal ── */
+.chart-analyze { color: #555; display: inline-flex; align-items: center; justify-content: center; margin-left: 6px; vertical-align: middle; }
+.chart-analyze svg { width: 13px; height: 13px; }
+.chart-analyze:hover { color: var(--cyan); }
+.big-chart { min-width: 420px; max-width: 860px; }
+.indicator-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: #070707;
+  flex-wrap: wrap;
+}
+.ind-label { color: #555; font: 700 8px/1 "Courier New", monospace; letter-spacing: .08em; }
+.ind-spacer { flex: 1; }
+.toggle-chip, .tf-chip {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid #2a2a2a;
+  color: #888;
+  font: 700 9px/1 "Courier New", monospace;
+  transition: all .15s;
+}
+.toggle-chip:hover, .tf-chip:hover { border-color: #555; color: #ddd; }
+.toggle-chip.on { border-color: var(--cyan); color: var(--cyan); background: #001a1a; }
+.tf-chip.active { border-color: var(--green); color: var(--green); background: var(--hl-bg); }
+.chart-stage {
+  position: relative;
+  height: 330px;
+  margin-top: 1px;
+  border: 1px solid var(--line);
+  background: #050505;
+  overflow: hidden;
+}
+.chart-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #555;
+  font: 700 10px/1 "Courier New", monospace;
+  letter-spacing: .1em;
+  background: #050505;
+  z-index: 5;
+}
+.chart-placeholder.error { color: var(--red); }
+.big-chart-note { margin-top: 6px; color: #555; font-size: 9px; line-height: 1.5; }
+@media (max-width: 720px) { .big-chart { min-width: 0; width: 100%; } .indicator-bar { gap: 4px; } }
+
+/* ── Market screener ── */
+.screener { border: 1px solid var(--line); background: #0a0a0a; }
+.screener-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.screener-toolbar .search-box { flex: 1; min-width: 180px; max-width: 320px; }
+.screener-hint { color: #444; font-size: 9px; letter-spacing: .06em; }
+.screener-head {
+  display: grid;
+  grid-template-columns: 28px 1.4fr 1fr 90px 130px 30px;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #070707;
+  color: #555;
+  font: 700 8px/1 "Courier New", monospace;
+  letter-spacing: .08em;
+}
+.sort-btn { color: #666; text-align: left; font: 700 8px/1 "Courier New", monospace; letter-spacing: .08em; white-space: nowrap; }
+.sort-btn:hover { color: var(--ink); }
+.sort-btn.active { color: var(--amber); }
+.screener-list { max-height: 460px; overflow-y: auto; }
+.screener-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 28px 1.4fr 1fr 90px 130px 30px;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid #111;
+  color: #ccc;
+  text-align: left;
+  transition: background .12s;
+}
+.screener-row:last-child { border-bottom: none; }
+.screener-row:hover { background: var(--hl-bg); }
+.screener-row:disabled { opacity: .5; cursor: wait; }
+.screener-row .rank { color: #444; font-size: 9px; }
+.screener-row .pair { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.screener-row .pair b { font-size: 11px; color: #fff; }
+.screener-row .pair i { font-style: normal; color: #555; font-size: 9px; }
+.screener-row .price { font-size: 11px; color: #ddd; white-space: nowrap; }
+.screener-row .volume { font-size: 10px; color: #888; white-space: nowrap; }
+.screener-row .add-hint { color: var(--green); font-size: 13px; text-align: center; }
+.screener-row:hover .add-hint { color: var(--amber); }
+.screener-empty { padding: 26px; color: #666; text-align: center; font-size: 11px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+@media (max-width: 720px) {
+  .screener-head, .screener-row { grid-template-columns: 24px 1.2fr 80px 26px; }
+  .screener-head .volume, .screener-row .volume, .screener-head > span:nth-last-child(1), .screener-row .add-hint { display: none; }
+}
+
+/* ── Alert history ── */
+.alert-history { max-height: 160px; overflow-y: auto; border: 1px solid var(--line); margin-bottom: 2px; }
+.history-time { color: #777; font-size: 9px; white-space: nowrap; margin-left: auto; }
+
+/* ── Keyboard shortcut help ── */
+.help-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, .75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+.help-panel {
+  width: min(460px, 100%);
+  border: 1px solid #333;
+  background: #0a0a0a;
+  box-shadow: 10px 10px 0 rgba(0, 0, 0, .6);
+}
+.help-panel .modal-head { border-bottom: 1px solid var(--line); }
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 10px;
+}
+.shortcut-grid div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px dashed #161616;
+  color: #999;
+  font-size: 10px;
+}
+.shortcut-grid kbd, .shortcut-note kbd {
+  min-width: 24px;
+  padding: 2px 6px;
+  border: 1px solid #333;
+  border-bottom-width: 2px;
+  background: #050505;
+  color: var(--amber);
+  font: 700 10px/1.2 "Courier New", monospace;
+  text-align: center;
+}
+.shortcut-note { padding: 0 12px 12px; color: #555; font-size: 9px; }
+@media (max-width: 720px) { .shortcut-grid { grid-template-columns: 1fr; } }

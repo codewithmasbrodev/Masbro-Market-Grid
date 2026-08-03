@@ -1,8 +1,9 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BarChart3, Bell, Check, Database, GripVertical, LayoutGrid, LoaderCircle, Move, Plus, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Wallet, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUp, BarChart3, Bell, ChartCandlestick, Check, Database, GripVertical, Keyboard, LayoutGrid, LayoutList, LoaderCircle, Move, Plus, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Wallet, X, Zap } from "lucide-react";
+import { CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, LineSeries, createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import { api, type WhaleTx } from "./lib/api";
-import { INSTRUMENTS, TIMEFRAMES, type ChartPanel as Panel, type ConnectionStatus, type Dashboard, type InsightResult, type Instrument, type MarketSnapshot, type PortfolioHolding, type PriceAlert, type Timeframe } from "./lib/types";
+import { INSTRUMENTS, TIMEFRAMES, type ChartPanel as Panel, type ConnectionStatus, type Dashboard, type InsightResult, type Instrument, type Kline, type MarketSnapshot, type PortfolioHolding, type PriceAlert, type SentimentData, type Timeframe, type Workspace } from "./lib/types";
 import "./styles.css";
 import "./features.css";
 
@@ -33,6 +34,48 @@ function playAlertSound() {
     }
     window.setTimeout(() => void ctx.close().catch(() => undefined), 1200);
   } catch { /* audio unavailable */ }
+}
+
+const SHORTCUTS: [string, string][] = [
+  ["1", "View MONITOR (grid)"],
+  ["2", "Chart analisis penuh (candlestick real)"],
+  ["3", "View PAIRS (screener)"],
+  ["A", "Buka Price Alerts"],
+  ["P", "Buka Portfolio & P&L"],
+  ["I", "Buka MASBRO AI"],
+  ["/", "Tambah chart ke grid"],
+  ["?", "Bantuan pintasan ini"],
+];
+
+function movingAverage(candles: Kline[], period: number): { time: number; value: number }[] {
+  const out: { time: number; value: number }[] = [];
+  for (let i = period - 1; i < candles.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += candles[j].close;
+    out.push({ time: candles[i].time, value: sum / period });
+  }
+  return out;
+}
+
+function computeRsi(candles: Kline[], period = 14): { time: number; value: number }[] {
+  if (candles.length <= period) return [];
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const diff = candles[i].close - candles[i - 1].close;
+    gains.push(Math.max(diff, 0));
+    losses.push(Math.max(-diff, 0));
+  }
+  let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const out: { time: number; value: number }[] = [];
+  for (let i = period; i < gains.length; i++) {
+    avgGain = (avgGain * (period - 1) + gains[i]) / period;
+    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    out.push({ time: candles[i].time, value: 100 - 100 / (1 + rs) });
+  }
+  return out;
 }
 
 function AssetLogo({ instrument, symbol, size = "normal" }: { instrument?: Instrument; symbol: string; size?: "normal" | "large" }) {
@@ -121,7 +164,7 @@ function InstrumentSearch({ onClose, onAdd, initial }: { onClose: () => void; on
   </Modal>;
 }
 
-function ChartPanel({ panel, snapshot, onTimeframe, onRemove, onMove, onEdit, draggable, onDragStart, onDrop }: { panel: Panel; snapshot?: MarketSnapshot; onTimeframe: (tf: Timeframe) => void; onRemove: () => void; onMove: (direction: -1 | 1) => void; onEdit: () => void; draggable: boolean; onDragStart: () => void; onDrop: () => void }) {
+function ChartPanel({ panel, snapshot, onTimeframe, onRemove, onMove, onEdit, onChart, draggable, onDragStart, onDrop }: { panel: Panel; snapshot?: MarketSnapshot; onTimeframe: (tf: Timeframe) => void; onRemove: () => void; onMove: (direction: -1 | 1) => void; onEdit: () => void; onChart: () => void; draggable: boolean; onDragStart: () => void; onDrop: () => void }) {
   const [retryKey, setRetryKey] = useState(0);
   const pair = panel.symbol.split(":")[1];
   const instrument = instrumentBySymbol.get(panel.symbol);
@@ -138,7 +181,7 @@ function ChartPanel({ panel, snapshot, onTimeframe, onRemove, onMove, onEdit, dr
       <div className="price-block"><strong>{snapshot?.price == null ? "—" : instrument?.quote === "%" ? `${snapshot.price.toFixed(2)}%` : `${money.format(snapshot.price)}`}</strong><span className={change == null ? "muted" : change >= 0 ? "positive" : "negative"}>{change == null ? "DATA TERTUNDA" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span></div>
       <div className="panel-actions"><button className="icon-btn" onClick={() => onMove(-1)} aria-label="Pindah ke atas"><ArrowUp /></button><button className="icon-btn" onClick={() => onMove(1)} aria-label="Pindah ke bawah"><ArrowDown /></button><button className="icon-btn" onClick={onEdit} aria-label={`Atur ${panel.symbol}`}><Settings2 /></button><button className="icon-btn danger" onClick={onRemove} aria-label={`Hapus ${panel.symbol}`}><Trash2 /></button></div>
     </header>
-    <div className="panel-meta"><div className="timeframes" role="group" aria-label={`Timeframe ${panel.symbol}`}>{TIMEFRAMES.map((tf) => <button key={tf} type="button" className={panel.timeframe === tf ? "active" : ""} aria-pressed={panel.timeframe === tf} onPointerDown={(event) => event.stopPropagation()} onClick={() => selectTimeframe(tf)}>{tf}</button>)}</div><span className="volume">VOL 24H&nbsp; {snapshot?.volume24h == null ? "—" : compact.format(snapshot.volume24h)}</span></div>
+    <div className="panel-meta"><div className="timeframes" role="group" aria-label={`Timeframe ${panel.symbol}`}>{TIMEFRAMES.map((tf) => <button key={tf} type="button" className={panel.timeframe === tf ? "active" : ""} aria-pressed={panel.timeframe === tf} onPointerDown={(event) => event.stopPropagation()} onClick={() => selectTimeframe(tf)}>{tf}</button>)}</div><span className="volume">VOL 24H&nbsp; {snapshot?.volume24h == null ? "—" : compact.format(snapshot.volume24h)}</span><button className="icon-btn chart-analyze" onClick={onChart} title={`Analisis real ${panel.symbol}`} aria-label={`Analisis ${panel.symbol}`}><ChartCandlestick /></button></div>
     <div className="chart-wrap"><TradingViewChart panel={panel} retryKey={retryKey} />{snapshot?.sourceStatus === "unavailable" && <div className="data-warning"><AlertTriangle />Feed harga belum tersedia <button onClick={() => setRetryKey((v) => v + 1)}><RefreshCw /> Coba chart</button></div>}</div>
   </article>;
 }
@@ -298,6 +341,18 @@ function AlertModal({ alerts, prices, onClose, onCreate, onToggle, onRemove }: {
         </div>;
       })}
     </div> : <p className="modal-empty">Belum ada alert. Atur target harga untuk mulai dipantau.</p>}
+    {alerts.some((a) => a.triggeredAt) && <>
+      <div className="catalog-label"><span>HISTORI TERPICU</span><span>TIME</span></div>
+      <div className="alert-history">
+        {alerts.filter((a) => a.triggeredAt).slice(0, 20).map((a) => (
+          <div className="alert-row inactive" key={`hist-${a.id}`}>
+            <div className="alert-main"><strong>{a.symbol.split(":")[1] ?? a.symbol}</strong><small>{a.direction === "above" ? "⬆ ATAS" : "⬇ BAWAH"} ${money.format(a.targetPrice)}</small></div>
+            <span className="history-time">{new Date(a.triggeredAt!).toLocaleString("id-ID", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+            <span className="alert-state done">TERPICU</span>
+          </div>
+        ))}
+      </div>
+    </>}
   </Modal>;
 }
 
@@ -312,6 +367,216 @@ function InsightModal({ insight, loading, error, onGenerate, onClose }: { insigh
       <div className="modal-actions"><button className="btn ghost" onClick={onClose}>TUTUP</button><button className="btn primary" onClick={onGenerate} disabled={loading}><Sparkles /> {insight ? "BRIEF BARU" : "BUAT MARKET BRIEF"}</button></div>
     </div>
   </Modal>;
+}
+
+function SentimentStrip({ data }: { data: SentimentData | null }) {
+  const fng = data?.fearGreed;
+  const funding = data?.funding ?? [];
+  const nextFunding = funding.length ? Math.min(...funding.map((f) => f.nextFundingTime)) : null;
+  return <section className="sentiment-strip" aria-label="Sentimen pasar">
+    <div className="fng-cell">
+      <span className="sent-label">FEAR & GREED</span>
+      {fng ? <>
+        <div className="fng-bar"><i style={{ width: `${Math.max(2, Math.min(98, fng.value))}%` }} className={fng.value >= 55 ? "greedy" : fng.value <= 45 ? "fear" : ""} /></div>
+        <strong className={fng.value >= 55 ? "positive" : fng.value <= 45 ? "negative" : ""}>{fng.value}</strong>
+        <em>{fng.classification.toUpperCase()}</em>
+      </> : <span className="sent-na">DATA TIDAK TERSEDIA</span>}
+    </div>
+    <div className="funding-cell">
+      <span className="sent-label">FUNDING RATE PERP{nextFunding ? ` · NEXT ${new Date(nextFunding).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })} UTC` : ""}</span>
+      <div className="funding-list">
+        {funding.length ? funding.map((f) => (
+          <span key={f.symbol}><b>{f.symbol.replace("USDT", "")}</b><em className={f.lastFundingRate >= 0 ? "positive" : "negative"}>{(f.lastFundingRate * 100).toFixed(3)}%</em></span>
+        )) : <span className="sent-na">—</span>}
+      </div>
+    </div>
+  </section>;
+}
+
+interface ScreenerRow { symbol: string; base: string; price: number; change24h: number; quoteVolume: number; }
+
+function Screener({ onAdd }: { onAdd: (symbol: string) => Promise<void> }) {
+  const [rows, setRows] = useState<ScreenerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<"quoteVolume" | "change24h" | "price">("quoteVolume");
+  const [dir, setDir] = useState<"asc" | "desc">("desc");
+  const [adding, setAdding] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true); setError("");
+      try {
+        const res = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+        if (!res.ok) throw new Error("HTTP");
+        const all = await res.json() as { symbol: string; lastPrice: string; priceChangePercent: string; quoteVolume: string }[];
+        const list = all
+          .filter((t) => t.symbol.endsWith("USDT"))
+          .map((t) => ({ symbol: `BINANCE:${t.symbol}`, base: t.symbol.replace("USDT", ""), price: Number(t.lastPrice), change24h: Number(t.priceChangePercent), quoteVolume: Number(t.quoteVolume) }))
+          .sort((a, b) => b.quoteVolume - a.quoteVolume)
+          .slice(0, 120);
+        if (!cancelled) setRows(list);
+      } catch { if (!cancelled) setError("Feed Binance tidak tersedia — cek koneksi."); }
+      finally { if (!cancelled) setLoading(false); }
+    };
+    void load();
+    const timer = window.setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q ? rows.filter((r) => r.base.toLowerCase().includes(q) || r.symbol.toLowerCase().includes(q)) : rows;
+    return [...list].sort((a, b) => (dir === "desc" ? b[sortKey] - a[sortKey] : a[sortKey] - b[sortKey]));
+  }, [rows, query, sortKey, dir]);
+  const header = (key: "quoteVolume" | "change24h" | "price", label: string) => (
+    <button className={`sort-btn ${sortKey === key ? "active" : ""}`} onClick={() => { if (sortKey === key) setDir((d) => (d === "desc" ? "asc" : "desc")); else { setSortKey(key); setDir("desc"); } }}>{label}{sortKey === key ? (dir === "desc" ? " ↓" : " ↑") : ""}</button>
+  );
+  const add = async (row: ScreenerRow) => {
+    setAdding(row.symbol);
+    try { await onAdd(row.symbol); }
+    finally { setAdding(null); }
+  };
+  return <section className="screener">
+    <div className="screener-toolbar">
+      <div className="search-box"><Search /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cari pair… (mis. BTC)" /><span className="result-count">{loading ? "…" : visible.length}</span></div>
+      <span className="screener-hint">KLIK BARIS UNTUK TAMBAH KE GRID · TOP {rows.length} PAIR USDT (BINANCE)</span>
+    </div>
+    <div className="screener-head"><span>#</span><span>PAIR</span>{header("price", "HARGA")}{header("change24h", "24J")}{header("quoteVolume", "VOLUME 24J (USD)")}<span /></div>
+    {loading && !rows.length ? <div className="screener-empty"><LoaderCircle className="spin" /> MEMUAT FEED…</div>
+      : error ? <div className="screener-empty"><AlertTriangle /> {error}</div>
+      : <div className="screener-list">
+          {visible.map((row, i) => (
+            <button key={row.symbol} className="screener-row" disabled={adding !== null} onClick={() => void add(row)}>
+              <span className="rank">{i + 1}</span>
+              <span className="pair"><AssetLogo instrument={instrumentBySymbol.get(row.symbol)} symbol={row.symbol} /><b>{row.base}<i>/USDT</i></b></span>
+              <span className="price">${row.price < 0.01 ? row.price.toFixed(6) : row.price < 1 ? row.price.toFixed(4) : money.format(row.price)}</span>
+              <span className={row.change24h >= 0 ? "positive" : "negative"}>{row.change24h >= 0 ? "+" : ""}{row.change24h.toFixed(2)}%</span>
+              <span className="volume">${compact.format(row.quoteVolume)}</span>
+              <span className="add-hint">{adding === row.symbol ? <LoaderCircle className="spin" /> : "+"}</span>
+            </button>
+          ))}
+          {!visible.length && !loading && <div className="screener-empty">Tidak ada pair yang cocok.</div>}
+        </div>}
+  </section>;
+}
+
+function BigChartModal({ panel, price, onClose }: { panel: Panel; price?: number | null; onClose: () => void }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<{ candle?: ISeriesApi<"Candlestick">; volume?: ISeriesApi<"Histogram">; ma20?: ISeriesApi<"Line">; ma50?: ISeriesApi<"Line">; rsi?: ISeriesApi<"Line"> }>({});
+  const indicatorState = useRef<{ length: number; showMA: boolean; showRSI: boolean }>({ length: 0, showMA: false, showRSI: false });
+  const [timeframe, setTimeframe] = useState<Timeframe>(panel.timeframe);
+  const [candles, setCandles] = useState<Kline[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [showMA, setShowMA] = useState(true);
+  const [showRSI, setShowRSI] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError("");
+    api.klines(panel.symbol, timeframe, 300)
+      .then((data) => { if (!cancelled) setCandles(data); })
+      .catch((err: Error) => { if (!cancelled) setError(err.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [panel.symbol, timeframe]);
+
+  // Live-update the last candle with the current tick price.
+  useEffect(() => {
+    if (price == null) return;
+    setCandles((current) => {
+      if (!current.length) return current;
+      const last = current[current.length - 1];
+      if (Math.abs(last.close - price) < 1e-9) return current;
+      const updated = [...current];
+      updated[updated.length - 1] = { ...last, close: price, high: Math.max(last.high, price), low: Math.min(last.low, price) };
+      return updated;
+    });
+  }, [price]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const chart = createChart(container, {
+      layout: { background: { type: ColorType.Solid, color: "#050505" }, textColor: "#7d8a7d", fontFamily: "'Courier New', monospace", fontSize: 10 },
+      grid: { vertLines: { color: "#101010" }, horzLines: { color: "#101010" } },
+      rightPriceScale: { borderColor: "#222" },
+      timeScale: { borderColor: "#222", timeVisible: true, secondsVisible: false, borderVisible: true },
+      crosshair: { mode: CrosshairMode.Normal },
+      width: container.clientWidth,
+      height: 330,
+    });
+    chartRef.current = chart;
+    return () => { chart.remove(); chartRef.current = null; seriesRef.current = {}; indicatorState.current = { length: 0, showMA: false, showRSI: false }; };
+  }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !candles.length) return;
+    const s = seriesRef.current;
+    let candle = s.candle;
+    if (!candle) {
+      candle = chart.addSeries(CandlestickSeries, {
+        upColor: "#33ff33", downColor: "#ff4444", borderUpColor: "#33ff33", borderDownColor: "#ff4444", wickUpColor: "#33ff33", wickDownColor: "#ff4444",
+      });
+      s.candle = candle;
+      const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "vol" });
+      volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      s.volume = volume;
+    }
+    candle.setData(candles.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
+    s.volume?.setData(candles.map((c) => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? "rgba(51,255,51,.35)" : "rgba(255,68,68,.35)" })));
+    const prev = indicatorState.current;
+    const rebuild = candles.length !== prev.length || showMA !== prev.showMA || showRSI !== prev.showRSI;
+    indicatorState.current = { length: candles.length, showMA, showRSI };
+    if (rebuild) {
+      for (const key of ["ma20", "ma50", "rsi"] as const) { const existing = s[key]; if (existing) { chart.removeSeries(existing); s[key] = undefined; } }
+      if (showMA) {
+        s.ma20 = chart.addSeries(LineSeries, { color: "#00ccff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        s.ma20.setData(movingAverage(candles, 20).map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        s.ma50 = chart.addSeries(LineSeries, { color: "#ffb000", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        s.ma50.setData(movingAverage(candles, 50).map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+      }
+      if (showRSI && candles.length > 20) {
+        const rsi = chart.addSeries(LineSeries, { color: "#cc66ff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, priceScaleId: "rsi" });
+        rsi.priceScale().applyOptions({ scaleMargins: { top: 0.72, bottom: 0.06 } });
+        rsi.setData(computeRsi(candles).map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
+        s.rsi = rsi;
+      }
+      chart.timeScale().fitContent();
+    }
+  }, [candles, showMA, showRSI]);
+
+  return <Modal title={`ANALISIS REAL — ${panel.symbol.split(":")[1] ?? panel.symbol}`} onClose={onClose}>
+    <div className="big-chart">
+      <div className="indicator-bar">
+        <span className="ind-label">INDIKATOR</span>
+        <button className={`toggle-chip ${showMA ? "on" : ""}`} onClick={() => setShowMA((v) => !v)}>MA 20/50</button>
+        <button className={`toggle-chip ${showRSI ? "on" : ""}`} onClick={() => setShowRSI((v) => !v)}>RSI 14</button>
+        <span className="ind-spacer" />
+        <span className="ind-label">TIMEFRAME</span>
+        {TIMEFRAMES.map((tf) => <button key={tf} className={`tf-chip ${timeframe === tf ? "active" : ""}`} onClick={() => setTimeframe(tf)}>{tf}</button>)}
+      </div>
+      <div className="chart-stage" ref={containerRef}>
+        {loading && <div className="chart-placeholder"><LoaderCircle className="spin" /> MEMUAT KANDEL…</div>}
+        {!loading && error && <div className="chart-placeholder error"><AlertTriangle /> {error}</div>}
+        {!loading && !error && !candles.length && <div className="chart-placeholder">BELUM ADA DATA</div>}
+      </div>
+      <p className="big-chart-note">Kandle real dari {panel.provider}. MA & RSI dihitung di sisi klien; harga live meng-update kandle terakhir.</p>
+    </div>
+  </Modal>;
+}
+
+function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  return <div className="help-backdrop" onClick={onClose}>
+    <div className="help-panel" role="dialog" aria-label="Pintasan keyboard" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-head"><div><span className="eyebrow">KEYBOARD</span><h2>PINTASAN TERMINAL</h2></div><button className="icon-btn" onClick={onClose} aria-label="Tutup"><X /></button></div>
+      <div className="shortcut-grid">{SHORTCUTS.map(([key, label]) => <div key={key}><kbd>{key}</kbd><span>{label}</span></div>)}</div>
+      <p className="shortcut-note">Pintasan aktif saat tidak mengetik di kolom input. <kbd>ESC</kbd> menutup dialog.</p>
+    </div>
+  </div>;
 }
 
 function DashboardApp() {
@@ -341,6 +606,13 @@ function DashboardApp() {
   const alertsRef = useRef<PriceAlert[]>([]);
   const triggeredRef = useRef<Set<string>>(new Set());
   const toastId = useRef(0);
+  const [view, setView] = useState<"monitor" | "screener">("monitor");
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [sentiment, setSentiment] = useState<SentimentData | null>(null);
+  const [showChart, setShowChart] = useState(false);
+  const [chartPanel, setChartPanel] = useState<Panel | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  const [confirmDeleteWs, setConfirmDeleteWs] = useState<string | null>(null);
 
   const load = useCallback(() => { setLoadingError(""); api.dashboard().then(setDashboard).catch((error: Error) => setLoadingError(error.message)); }, []);
   useEffect(load, [load]);
@@ -373,7 +645,7 @@ function DashboardApp() {
       }
       playAlertSound();
       setAlerts((current) => current.map((a) => a.id === alert.id ? { ...a, active: false, triggeredAt: new Date().toISOString() } : a));
-      void api.updateAlert(alert.id, { active: false }).catch(() => undefined);
+      void api.updateAlert(alert.id, { active: false, triggeredAt: new Date().toISOString() }).catch(() => undefined);
     }
   }, [pushToast]);
   // Vercel has no persistent WebSocket / Durable Object equivalent, so we poll the
@@ -422,6 +694,20 @@ function DashboardApp() {
     api.alerts().then((data) => { setAlerts(data); alertsRef.current = data; }).catch(() => undefined);
   }, []);
   useEffect(() => { alertsRef.current = alerts; }, [alerts]);
+
+  const loadWorkspaces = useCallback(() => { api.workspaces().then(setWorkspaces).catch(() => undefined); }, []);
+  useEffect(loadWorkspaces, [loadWorkspaces]);
+
+  // Fear & Greed + funding rate widgets
+  useEffect(() => {
+    let cancelled = false;
+    const loadSentiment = async () => {
+      try { const data = await api.sentiment(); if (!cancelled) setSentiment(data); } catch { /* ignore */ }
+    };
+    void loadSentiment();
+    const timer = window.setInterval(loadSentiment, 120000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
 
   // Real-time WebSocket feeds (Binance + Bitfinex) straight from the browser,
   // with the 8s polling above kept as an automatic fallback.
@@ -597,6 +883,65 @@ function DashboardApp() {
     finally { setInsightLoading(false); }
   }, [symbols]);
 
+  const switchWorkspace = useCallback(async (id: string) => {
+    if (id === dashboard?.id) return;
+    try {
+      await api.switchWorkspace(id);
+      loadWorkspaces();
+      load();
+    } catch (e) { pushToast(e instanceof Error ? e.message : "Gagal berpindah workspace.", "error"); }
+  }, [dashboard?.id, load, loadWorkspaces, pushToast]);
+
+  const createWorkspace = useCallback(async () => {
+    try {
+      const created = await api.createWorkspace();
+      loadWorkspaces();
+      load();
+      pushToast(`Workspace baru dibuat: ${created.name}`, "info");
+    } catch (e) { pushToast(e instanceof Error ? e.message : "Gagal membuat workspace.", "error"); }
+  }, [load, loadWorkspaces, pushToast]);
+
+  const deleteWorkspace = useCallback(async () => {
+    if (!confirmDeleteWs) return;
+    try {
+      await api.deleteWorkspace(confirmDeleteWs);
+      pushToast("Workspace dihapus.", "info");
+    } catch (e) { pushToast(e instanceof Error ? e.message : "Gagal menghapus workspace.", "error"); }
+    setConfirmDeleteWs(null);
+    loadWorkspaces();
+    load();
+  }, [confirmDeleteWs, load, loadWorkspaces, pushToast]);
+
+  const addFromScreener = useCallback(async (symbol: string) => {
+    try {
+      const added = await api.addPanel("BINANCE", symbol, "1h");
+      setDashboard((cur) => cur ? { ...cur, panels: [...cur.panels, added] } : cur);
+      pushToast(`${symbol.split(":")[1] ?? symbol} ditambahkan ke grid.`, "info");
+      setView("monitor");
+    } catch (e) { pushToast(e instanceof Error ? e.message : "Gagal menambahkan pair.", "error"); }
+  }, [pushToast]);
+
+  // Bloomberg-style keyboard shortcuts
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA")) return;
+      const anyModalOpen = modal !== null || confirmDeleteWs !== null || showPortfolio || showAlerts || showInsight || showChart || showHelp;
+      if (anyModalOpen) return;
+      const key = event.key.toLowerCase();
+      if (key === "1") setView("monitor");
+      else if (key === "2") { const first = dashboard?.panels[0]; if (first) { setChartPanel(first); setShowChart(true); } }
+      else if (key === "3") setView("screener");
+      else if (key === "/") { event.preventDefault(); setModal("add"); }
+      else if (key === "a") setShowAlerts(true);
+      else if (key === "p") setShowPortfolio(true);
+      else if (key === "i") { setShowInsight(true); void generateInsight(); }
+      else if (key === "?") setShowHelp((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [modal, confirmDeleteWs, showPortfolio, showAlerts, showInsight, showChart, showHelp, dashboard?.panels, generateInsight]);
+
   if (loadingError) return <main className="center-state"><AlertTriangle /><h1>DASHBOARD TIDAK TERJANGKAU</h1><p>{loadingError}</p><button className="btn primary" onClick={load}><RefreshCw /> COBA LAGI</button></main>;
   if (!dashboard) return <main className="center-state"><LoaderCircle className="spin" /><h1>MENYUSUN MARKET GRID</h1><p>Memuat panel dan menghubungkan feed pasar…</p></main>;
 
@@ -611,11 +956,12 @@ function DashboardApp() {
       </span>
     </div>
 
-    {/* Bloomberg Tab Navigation */}
+    {/* Bloomberg Tab Navigation (keyboard: 1 / 2 / 3) */}
     <div className="bb-tabs">
-      <span className="tab active"><span className="key">[1]</span> MONITOR</span>
-      <span className="tab"><span className="key">[2]</span> CHARTS</span>
-      <span className="tab"><span className="key">[3]</span> {dashboard?.panels.length ?? 0} PAIRS</span>
+      <button className={`tab ${view === "monitor" ? "active" : ""}`} onClick={() => setView("monitor")}><span className="key">[1]</span> MONITOR</button>
+      <button className="tab" onClick={() => { const first = dashboard.panels[0]; if (first) { setChartPanel(first); setShowChart(true); } }}><span className="key">[2]</span> CHARTS</button>
+      <button className={`tab ${view === "screener" ? "active" : ""}`} onClick={() => setView("screener")}><span className="key">[3]</span> PAIRS</button>
+      <span className="tab hint"><Keyboard /> [1]GRID [2]CHART [3]PAIRS · A ALERTS · P PORTFOLIO · I AI · / ADD · ? HELP</span>
     </div>
 
     {/* Compact Topbar */}
@@ -639,6 +985,14 @@ function DashboardApp() {
           <h1>{dashboard.name}</h1>
           <p>{dashboard.panels.length} MODULES · REAL-TIME</p>
         </div>
+        <div className="workspace-control">
+          <label><LayoutList /> WS</label>
+          <select value={dashboard.id} onChange={(e) => void switchWorkspace(e.target.value)} title="Ganti workspace" aria-label="Ganti workspace">
+            {workspaces.map((ws) => <option key={ws.id} value={ws.id}>{ws.name}</option>)}
+          </select>
+          <button className="icon-btn" onClick={() => void createWorkspace()} title="Buat workspace baru" aria-label="Buat workspace baru"><Plus /></button>
+          <button className="icon-btn danger" onClick={() => setConfirmDeleteWs(dashboard.id)} title="Hapus workspace ini" aria-label="Hapus workspace" disabled={workspaces.length <= 1}><Trash2 /></button>
+        </div>
         <div className="layout-control">
           <label><LayoutGrid /> COL</label>
           {[1, 2, 3, 4].map((count) => <button key={count} aria-label={`${count} kolom`} className={dashboard.columns === count ? "active" : ""} onClick={() => void saveLayout(dashboard.panels, count)}>{count}</button>)}
@@ -655,10 +1009,14 @@ function DashboardApp() {
         </section>
       )}
 
+      <SentimentStrip data={sentiment} />
+
       {/* Market Grid */}
-      {dashboard.panels.length ? (
+      {view === "screener" ? (
+        <Screener onAdd={addFromScreener} />
+      ) : dashboard.panels.length ? (
         <section className="market-grid" style={{ "--columns": dashboard.columns } as React.CSSProperties}>
-          {dashboard.panels.map((panel) => <ChartPanel key={panel.id} panel={panel} snapshot={snapshots[panel.symbol]} draggable onDragStart={() => setDragged(panel.id)} onDrop={() => { if (!dragged || dragged === panel.id) return; const next = [...dashboard.panels]; const from = next.findIndex((p) => p.id === dragged), to = next.findIndex((p) => p.id === panel.id); const [item] = next.splice(from, 1); next.splice(to, 0, item); setDragged(null); void saveLayout(next); }} onMove={(d) => move(panel.id, d)} onTimeframe={(tf) => { void mutatePanel(panel, { timeframe: tf }).catch(() => undefined); }} onEdit={() => { setActivePanel(panel); setModal("edit"); }} onRemove={() => { setActivePanel(panel); setModal("delete"); }} />)}
+          {dashboard.panels.map((panel) => <ChartPanel key={panel.id} panel={panel} snapshot={snapshots[panel.symbol]} draggable onDragStart={() => setDragged(panel.id)} onDrop={() => { if (!dragged || dragged === panel.id) return; const next = [...dashboard.panels]; const from = next.findIndex((p) => p.id === dragged), to = next.findIndex((p) => p.id === panel.id); const [item] = next.splice(from, 1); next.splice(to, 0, item); setDragged(null); void saveLayout(next); }} onMove={(d) => move(panel.id, d)} onTimeframe={(tf) => { void mutatePanel(panel, { timeframe: tf }).catch(() => undefined); }} onEdit={() => { setActivePanel(panel); setModal("edit"); }} onChart={() => { setChartPanel(panel); setShowChart(true); }} onRemove={() => { setActivePanel(panel); setModal("delete"); }} />)}
         </section>
       ) : (
         <section className="empty-state">
@@ -684,6 +1042,9 @@ function DashboardApp() {
     {showPortfolio && <PortfolioModal holdings={portfolio} prices={snapshots} onClose={() => setShowPortfolio(false)} onSave={saveHolding} onRemove={removeHolding} />}
     {showAlerts && <AlertModal alerts={alerts} prices={snapshots} onClose={() => setShowAlerts(false)} onCreate={createAlert} onToggle={toggleAlert} onRemove={removeAlert} />}
     {showInsight && <InsightModal insight={insight} loading={insightLoading} error={insightError} onGenerate={() => void generateInsight()} onClose={() => setShowInsight(false)} />}
+    {showChart && chartPanel && <BigChartModal panel={chartPanel} price={snapshots[chartPanel.symbol]?.price} onClose={() => setShowChart(false)} />}
+    {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}
+    {confirmDeleteWs && <Modal title="HAPUS WORKSPACE?" onClose={() => setConfirmDeleteWs(null)}><div className="confirm-copy"><p><strong>{workspaces.find((w) => w.id === confirmDeleteWs)?.name ?? "Workspace"}</strong> dan semua chart di dalamnya akan dihapus permanen. Tindakan ini tidak dapat dibatalkan.</p></div><div className="modal-actions"><button className="btn ghost" onClick={() => setConfirmDeleteWs(null)}>BATAL</button><button className="btn destructive" onClick={() => void deleteWorkspace()}><Trash2 /> HAPUS</button></div></Modal>}
     {toasts.length > 0 && <div className="toast-stack" role="status" aria-live="polite">{toasts.map((toast) => <div key={toast.id} className={`toast ${toast.kind}`}>{toast.kind === "alert" ? <Bell /> : toast.kind === "error" ? <AlertTriangle /> : <Check />}<span>{toast.text}</span></div>)}</div>}
   </div>;
 }

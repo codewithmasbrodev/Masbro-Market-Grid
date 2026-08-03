@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../src/db/client";
 import { chartPanels, dashboards, portfolioHoldings, priceAlerts } from "../src/db/schema";
 import { INSTRUMENTS, TIMEFRAMES, type ChartPanel, type Dashboard, type MarketSnapshot, type Provider, type Timeframe } from "../src/lib/types";
@@ -14,6 +14,7 @@ const DEFAULT_SYMBOLS = new Set([
 ]);
 const DEFAULTS = INSTRUMENTS.filter((instrument) => DEFAULT_SYMBOLS.has(instrument.symbol)).map((instrument) => ({ ...instrument, timeframe: "1h" as Timeframe }));
 const MAX_PANELS = 16;
+const WS_COOKIE = (id: string) => `dmg_ws=${id}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`;
 const json = (data: unknown, status = 200, headers?: HeadersInit) => Response.json(data, { status, headers });
 const error = (message: string, status = 400) => json({ error: message }, status);
 const validInstrument = (provider: unknown, symbol: unknown) => INSTRUMENTS.find((item) => item.provider === provider && item.symbol === symbol);
@@ -60,11 +61,10 @@ const ASSET_PRICES: Record<string, number> = { BTC: 64000, ETH: 1900, SOL: 185, 
 // ── BTC Whales from mempool.space (FREE, no key needed) ──
 async function fetchBtcWhales(): Promise<WhaleTx[]> {
   try {
-    // Use mempool.space API (free, no auth)
     const resp = await fetch("https://mempool.space/api/mempool/recent", { signal: AbortSignal.timeout(8000) });
     if (!resp.ok) return [];
     const txs = await resp.json() as { txid: string; fee: number; value: number; time: number }[];
-    const MIN_BTC = 3; // 10 BTC minimum for whale
+    const MIN_BTC = 3;
     const btcPrice = 64000;
     return txs
       .filter((tx) => tx.value >= MIN_BTC * 1e8)
@@ -89,10 +89,9 @@ async function fetchBtcWhales(): Promise<WhaleTx[]> {
   } catch { return []; }
 }
 
-// ── ETH Whales from Etherscan (FREE API) ──
+// ── ETH Whales from free public Ethereum RPC ──
 async function fetchEthWhales(): Promise<WhaleTx[]> {
   try {
-    // Use free public Ethereum RPC (no API key needed)
     const RPC = "https://ethereum-rpc.publicnode.com";
     const resp = await fetch(RPC, {
       method: "POST",
@@ -112,7 +111,7 @@ async function fetchEthWhales(): Promise<WhaleTx[]> {
     if (!blockResp.ok) return [];
     const block = await blockResp.json() as { result: { transactions: { hash: string; from: string; to: string; value: string }[] } };
     const txs = block.result?.transactions ?? [];
-    const MIN_ETH = 10; // 100 ETH minimum
+    const MIN_ETH = 10;
     const ethPrice = 1900;
 
     return txs
@@ -139,21 +138,12 @@ async function fetchEthWhales(): Promise<WhaleTx[]> {
 // ── SOL Whales from public Solana RPC ──
 async function fetchSolWhales(): Promise<WhaleTx[]> {
   try {
-    const solPrice = 185;
-    const MIN_SOL = 5000;
     const resp = await fetch("https://api.mainnet-beta.solana.com", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getRecentPerformanceSamples",
-        params: [1],
-      }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getRecentPerformanceSamples", params: [1] }),
       signal: AbortSignal.timeout(5000),
     });
-    // Solana doesn't have a simple "recent txs" endpoint without API key
-    // We'll use a simpler approach — check latest signatures
     return [];
   } catch { return []; }
 }
@@ -162,7 +152,6 @@ async function fetchSolWhales(): Promise<WhaleTx[]> {
 async function fetchWhales(): Promise<WhaleTx[]> {
   const [btc, eth] = await Promise.all([fetchBtcWhales(), fetchEthWhales()]);
   const all = [...btc, ...eth];
-  // Dedup by txid prefix
   const seen = new Set<string>();
   return all.filter((tx) => {
     if (seen.has(tx.txHash.slice(0, 20))) return false;
@@ -171,36 +160,47 @@ async function fetchWhales(): Promise<WhaleTx[]> {
   }).sort((a, b) => b.timestamp - a.timestamp).slice(0, 30);
 }
 
-async function owner(request: Request): Promise<{ hash: string; cookie?: string }> {
-  const found = request.headers.get("cookie")?.match(/(?:^|;\s*)dmg_owner=([^;]+)/)?.[1];
+async function owner(request: Request): Promise<{ hash: string; cookie?: string; wsId?: string }> {
+  const cookie = request.headers.get("cookie") ?? "";
+  const found = cookie.match(/(?:^|;\s*)dmg_owner=([^;]+)/)?.[1];
+  const wsId = cookie.match(/(?:^|;\s*)dmg_ws=([^;]+)/)?.[1] ?? undefined;
   const token = found ?? crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
   const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return { hash, cookie: found ? undefined : `dmg_owner=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000` };
+  return { hash, wsId, cookie: found ? undefined : `dmg_owner=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000` };
 }
 
-async function findDashboard(ownerHash: string) {
+async function findDashboardById(id: string) {
+  return (await getDb().select().from(dashboards).where(eq(dashboards.id, id)).limit(1))[0];
+}
+
+// Resolve the active dashboard for an owner: explicit dmg_ws cookie, else first
+// created, else create the default workspace (with seeded panels).
+async function resolveDashboard(ownerHash: string, wsId?: string): Promise<{ dashboard: typeof dashboards.$inferSelect; newWsCookie?: string }> {
   const db = getDb();
-  return (await db.select().from(dashboards).where(eq(dashboards.ownerHash, ownerHash)).limit(1))[0];
+  const owned = await db.select().from(dashboards).where(eq(dashboards.ownerHash, ownerHash)).orderBy(asc(dashboards.createdAt));
+  if (!owned.length) {
+    const id = crypto.randomUUID();
+    await db.insert(dashboards).values({ id, ownerHash, name: "WORKSPACE 01", columns: 2 });
+    await db.insert(chartPanels).values(DEFAULTS.map((item, index) => ({
+      id: crypto.randomUUID(), dashboardId: id, provider: item.provider, symbol: item.symbol, timeframe: item.timeframe, position: index, span: 1,
+    })));
+    const created = await findDashboardById(id);
+    return { dashboard: created!, newWsCookie: WS_COOKIE(id) };
+  }
+  if (wsId) {
+    const match = owned.find((item) => item.id === wsId);
+    if (match) return { dashboard: match };
+  }
+  const active = owned[0];
+  return { dashboard: active, newWsCookie: active.id !== wsId ? WS_COOKIE(active.id) : undefined };
 }
 
-async function ensureDashboard(ownerHash: string): Promise<typeof dashboards.$inferSelect> {
-  const existing = await findDashboard(ownerHash);
-  if (existing) return existing;
+async function fullDashboardById(ownerHash: string, dashboardId: string): Promise<Dashboard> {
   const db = getDb();
-  const dashboardId = crypto.randomUUID();
-  await db.insert(dashboards).values({ id: dashboardId, ownerHash, name: "MY MARKET GRID", columns: 2 });
-  await db.insert(chartPanels).values(DEFAULTS.map((item, index) => ({
-    id: crypto.randomUUID(), dashboardId, provider: item.provider, symbol: item.symbol, timeframe: item.timeframe, position: index, span: 1,
-  })));
-  const created = await findDashboard(ownerHash);
-  if (!created) throw new Error("Dashboard gagal dibuat.");
-  return created;
-}
-
-async function fullDashboard(ownerHash: string): Promise<Dashboard> {
-  const dashboard = await ensureDashboard(ownerHash);
-  const rows = await getDb().select().from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id)).orderBy(asc(chartPanels.position));
+  const dashboard = (await db.select().from(dashboards).where(and(eq(dashboards.id, dashboardId), eq(dashboards.ownerHash, ownerHash))).limit(1))[0];
+  if (!dashboard) throw new Error("Dashboard tidak ditemukan.");
+  const rows = await db.select().from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id)).orderBy(asc(chartPanels.position));
   return {
     id: dashboard.id,
     name: dashboard.name,
@@ -250,17 +250,37 @@ async function marketSnapshot(symbol: string): Promise<MarketSnapshot> {
   } catch { return unavailable(); }
 }
 
-// ── Dev-friendly schema bootstrap ──
-// Production runs Drizzle migrations (migrations/*.sql). The local SQLite dev
-// database is brand new each environment, so we mirror the same schema with
-// CREATE IF NOT EXISTS — harmless in production, essential in dev.
+// ── Dev-friendly schema bootstrap (mirrors migrations/*.sql) ──
+// Multi-workspace migration: legacy dashboards had UNIQUE owner_hash and
+// chart_panels had a FK REFERENCES dashboards(id). SQLite cannot drop either
+// constraint, so recreate both tables when detected. FKs are not needed here —
+// panels are deleted explicitly everywhere.
 let ensured = false;
 async function ensureTables() {
   if (ensured) return;
   const db = getDb();
+  try {
+    const probe = await db.run(sql`SELECT name, sql FROM sqlite_master WHERE type='table' AND name IN ('dashboards','chart_panels')`);
+    const tables = new Map<string, string>((probe.rows ?? []).map((row) => [String((row as { name?: unknown }).name), String((row as { sql?: unknown }).sql)]));
+    const legacyDash = (tables.get("dashboards") ?? "").includes("UNIQUE");
+    const legacyPanel = (tables.get("chart_panels") ?? "").includes("REFERENCES");
+    if (legacyDash) {
+      await db.run(sql`ALTER TABLE dashboards RENAME TO dashboards_legacy`);
+      await db.run(sql`CREATE TABLE dashboards (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL, name TEXT NOT NULL DEFAULT 'MY MARKET GRID', columns INTEGER NOT NULL DEFAULT 2, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+      await db.run(sql`INSERT INTO dashboards (id, owner_hash, name, columns, created_at, updated_at) SELECT id, owner_hash, name, columns, created_at, updated_at FROM dashboards_legacy`);
+      await db.run(sql`DROP TABLE dashboards_legacy`);
+    }
+    if (legacyPanel) {
+      await db.run(sql`ALTER TABLE chart_panels RENAME TO chart_panels_legacy`);
+      await db.run(sql`CREATE TABLE chart_panels (id TEXT PRIMARY KEY NOT NULL, dashboard_id TEXT NOT NULL, provider TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '1h', position INTEGER NOT NULL, span INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+      await db.run(sql`INSERT INTO chart_panels (id, dashboard_id, provider, symbol, timeframe, position, span, created_at, updated_at) SELECT id, dashboard_id, provider, symbol, timeframe, position, span, created_at, updated_at FROM chart_panels_legacy`);
+      await db.run(sql`DROP TABLE chart_panels_legacy`);
+    }
+  } catch { /* fresh DB — CREATE IF NOT EXISTS below covers it */ }
   const statements = [
-    sql`CREATE TABLE IF NOT EXISTS dashboards (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT 'MY MARKET GRID', columns INTEGER NOT NULL DEFAULT 2, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
-    sql`CREATE TABLE IF NOT EXISTS chart_panels (id TEXT PRIMARY KEY NOT NULL, dashboard_id TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE, provider TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '1h', position INTEGER NOT NULL, span INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    sql`CREATE TABLE IF NOT EXISTS dashboards (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL, name TEXT NOT NULL DEFAULT 'MY MARKET GRID', columns INTEGER NOT NULL DEFAULT 2, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    sql`CREATE INDEX IF NOT EXISTS dashboards_owner_hash_idx ON dashboards(owner_hash)`,
+    sql`CREATE TABLE IF NOT EXISTS chart_panels (id TEXT PRIMARY KEY NOT NULL, dashboard_id TEXT NOT NULL, provider TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '1h', position INTEGER NOT NULL, span INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
     sql`CREATE INDEX IF NOT EXISTS chart_panels_dashboard_position_idx ON chart_panels(dashboard_id, position)`,
     sql`CREATE TABLE IF NOT EXISTS portfolio_holdings (id TEXT PRIMARY KEY NOT NULL, owner_hash TEXT NOT NULL, symbol TEXT NOT NULL, base TEXT NOT NULL, quantity REAL NOT NULL, avg_price REAL NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
     sql`CREATE UNIQUE INDEX IF NOT EXISTS portfolio_holdings_owner_symbol_idx ON portfolio_holdings(owner_hash, symbol)`,
@@ -324,6 +344,51 @@ async function generateInsight(symbols: string[]): Promise<{ summary: string; pr
   }
 }
 
+// ── Fear & Greed Index (free public API) ──
+async function fetchFearGreed(): Promise<{ value: number; classification: string; updatedAt: number } | null> {
+  try {
+    const res = await fetch("https://api.alternative.me/fng/?limit=1", { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) return null;
+    const data = await res.json() as { data?: { value?: string; value_classification?: string; timestamp?: string }[] };
+    const row = data.data?.[0];
+    if (!row) return null;
+    return { value: Number(row.value), classification: row.value_classification ?? "", updatedAt: Number(row.timestamp ?? 0) * 1000 };
+  } catch { return null; }
+}
+
+// ── Perpetual funding rates (Binance futures, free public API) ──
+async function fetchFunding(): Promise<{ symbol: string; lastFundingRate: number; markPrice: number; nextFundingTime: number }[]> {
+  const majors = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+  try {
+    const rows = await Promise.all(majors.map(async (symbol) => {
+      const res = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) return null;
+      const data = await res.json() as { symbol: string; lastFundingRate: string; markPrice: string; nextFundingTime: number };
+      return { symbol, lastFundingRate: Number(data.lastFundingRate), markPrice: Number(data.markPrice), nextFundingTime: data.nextFundingTime };
+    }));
+    return rows.filter((row): row is NonNullable<typeof row> => row != null);
+  } catch { return []; }
+}
+
+// ── Real candlestick data (Binance + Bitfinex) ──
+async function fetchKlines(symbol: string, provider: Provider, timeframe: Timeframe, limit: number) {
+  if (provider === "BINANCE") {
+    const pair = symbol.split(":")[1];
+    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${timeframe}&limit=${limit}`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error("Binance klines unavailable");
+    const rows = await res.json() as [number, string, string, string, string, string][];
+    return rows.map((r) => ({ time: Math.floor(r[0] / 1000), open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]), volume: Number(r[5]) }));
+  }
+  if (provider === "BITFINEX") {
+    const pair = symbol.split(":")[1];
+    const res = await fetch(`https://api-pub.bitfinex.com/v2/candles/trade:${timeframe}:t${pair}/hist?limit=${limit}&sort=1`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error("Bitfinex klines unavailable");
+    const rows = await res.json() as [number, number, number, number, number, number][];
+    return rows.map((r) => ({ time: Math.floor(r[0] / 1000), open: r[1], high: r[3], low: r[4], close: r[2], volume: r[5] }));
+  }
+  throw new Error("Provider tidak mendukung klines.");
+}
+
 // All routes use single-level paths because Vercel edge catch-all ([...path].ts)
 // does not reliably route multi-level paths. Keep api endpoints flat.
 export default async function handler(request: Request): Promise<Response> {
@@ -343,26 +408,87 @@ export default async function handler(request: Request): Promise<Response> {
     const symbols = [...new Set((url.searchParams.get("symbols") ?? "").split(","))].filter((symbol) => INSTRUMENTS.some((item) => item.symbol === symbol)).slice(0, MAX_PANELS);
     return json(await Promise.all(symbols.map((symbol) => marketSnapshot(symbol))), 200, securityHeaders);
   }
-  // ── Whale Transaction Feed (FREE APIs: mempool.space + Etherscan) ──
+  // ── Whale Transaction Feed (FREE APIs: mempool.space + Ethereum RPC) ──
   if (url.pathname === "/api/whales" && request.method === "GET") {
     return json(await fetchWhales(), 200, securityHeaders);
+  }
+  if (url.pathname === "/api/sentiment" && request.method === "GET") {
+    const [fearGreed, funding] = await Promise.all([fetchFearGreed(), fetchFunding()]);
+    return json({ fearGreed, funding }, 200, securityHeaders);
+  }
+  if (url.pathname === "/api/klines" && request.method === "GET") {
+    const symbol = url.searchParams.get("symbol") ?? "";
+    const timeframe = url.searchParams.get("interval") ?? "1h";
+    const limit = Math.min(500, Math.max(50, Number(url.searchParams.get("limit") ?? 200)));
+    const instrument = INSTRUMENTS.find((item) => item.symbol === symbol);
+    if (!instrument || !validTimeframe(timeframe)) return error("Parameter klines tidak valid.", 422);
+    try { return json(await fetchKlines(symbol, instrument.provider, timeframe, limit), 200, securityHeaders); }
+    catch { return error("Data klines tidak tersedia.", 502); }
   }
   if (url.pathname === "/api/dashboard" && request.method === "GET") {
     const identity = await owner(request);
     const headers = new Headers(securityHeaders);
-    if (identity.cookie) headers.set("set-cookie", identity.cookie);
+    if (identity.cookie) headers.append("set-cookie", identity.cookie);
     await ensureTables();
-    return json(await fullDashboard(identity.hash), 200, headers);
+    const resolved = await resolveDashboard(identity.hash, identity.wsId);
+    if (resolved.newWsCookie) headers.append("set-cookie", resolved.newWsCookie);
+    return json(await fullDashboardById(identity.hash, resolved.dashboard.id), 200, headers);
   }
   
   // ── Auth for dashboard mutations ──
   const identity = await owner(request);
   const headers = new Headers(securityHeaders);
-  if (identity.cookie) headers.set("set-cookie", identity.cookie);
+  if (identity.cookie) headers.append("set-cookie", identity.cookie);
   
   await ensureTables();
-  const dashboard = await ensureDashboard(identity.hash);
+  const resolved = await resolveDashboard(identity.hash, identity.wsId);
+  if (resolved.newWsCookie) headers.append("set-cookie", resolved.newWsCookie);
+  const dashboard = resolved.dashboard;
   const db = getDb();
+
+  // ── Workspace management ──
+  if (url.pathname === "/api/workspaces") {
+    if (request.method === "GET") {
+      const rows = await db.select().from(dashboards).where(eq(dashboards.ownerHash, identity.hash)).orderBy(asc(dashboards.createdAt));
+      const ids = rows.map((row) => row.id);
+      const panels = ids.length ? await db.select({ dashboardId: chartPanels.dashboardId, id: chartPanels.id }).from(chartPanels).where(inArray(chartPanels.dashboardId, ids)) : [];
+      const counts = new Map<string, number>();
+      for (const panel of panels) counts.set(panel.dashboardId, (counts.get(panel.dashboardId) ?? 0) + 1);
+      return json(rows.map((row) => ({ id: row.id, name: row.name, columns: row.columns, panelCount: counts.get(row.id) ?? 0, updatedAt: row.updatedAt })), 200, headers);
+    }
+    if (request.method === "POST") {
+      const body = await parseBody(request);
+      const existing = await db.select({ id: dashboards.id }).from(dashboards).where(eq(dashboards.ownerHash, identity.hash));
+      const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim().slice(0, 40) : `WORKSPACE ${String(existing.length + 1).padStart(2, "0")}`;
+      const id = crypto.randomUUID();
+      await db.insert(dashboards).values({ id, ownerHash: identity.hash, name, columns: 2 });
+      headers.append("set-cookie", WS_COOKIE(id));
+      return json({ id, name }, 201, headers);
+    }
+    if (request.method === "DELETE") {
+      const id = url.searchParams.get("id");
+      if (!id) return error("Parameter workspace id diperlukan.", 422);
+      const owned = await db.select().from(dashboards).where(eq(dashboards.ownerHash, identity.hash));
+      if (owned.length <= 1) return error("Minimal satu workspace harus ada.", 422);
+      const target = owned.find((row) => row.id === id);
+      if (!target) return error("Workspace tidak ditemukan.", 404);
+      await db.delete(chartPanels).where(eq(chartPanels.dashboardId, id));
+      await db.delete(dashboards).where(eq(dashboards.id, id));
+      if (dashboard.id === id) {
+        const remaining = (await db.select().from(dashboards).where(eq(dashboards.ownerHash, identity.hash)).orderBy(asc(dashboards.createdAt)))[0];
+        if (remaining) headers.append("set-cookie", WS_COOKIE(remaining.id));
+      }
+      return json({ ok: true }, 200, headers);
+    }
+  }
+  if (url.pathname === "/api/workspace-switch" && request.method === "POST") {
+    const body = await parseBody(request);
+    const id = typeof body?.id === "string" ? body.id : null;
+    const owned = await db.select({ id: dashboards.id }).from(dashboards).where(eq(dashboards.ownerHash, identity.hash));
+    if (!id || !owned.some((row) => row.id === id)) return error("Workspace tidak valid.", 422);
+    headers.append("set-cookie", WS_COOKIE(id));
+    return json({ ok: true }, 200, headers);
+  }
   
   // ── Save layout ──
   if (url.pathname === "/api/layout" && request.method === "PUT") {
@@ -378,10 +504,13 @@ export default async function handler(request: Request): Promise<Response> {
     return json({ ok: true }, 200, headers);
   }
   
-  // ── Add panel ──
+  // ── Add panel (BINANCE USDT pairs beyond the catalog allowed too) ──
   if (url.pathname === "/api/panels" && request.method === "POST") {
     const body = await parseBody(request);
-    const instrument = validInstrument(body?.provider, body?.symbol);
+    const instrument = validInstrument(body?.provider, body?.symbol)
+      ?? (body?.provider === "BINANCE" && typeof body?.symbol === "string" && /^BINANCE:[A-Z0-9]{2,12}USDT$/.test(body.symbol)
+        ? { provider: "BINANCE" as Provider, symbol: body.symbol, label: body.symbol, base: body.symbol.split(":")[1].replace("USDT", ""), quote: "USDT", logo: null }
+        : undefined);
     if (!instrument || !validTimeframe(body?.timeframe)) return error("Instrumen atau timeframe tidak valid.", 422);
     const rows = await db.select().from(chartPanels).where(eq(chartPanels.dashboardId, dashboard.id));
     if (rows.length >= MAX_PANELS) return error("Maksimum 16 chart.", 429);
@@ -445,7 +574,7 @@ export default async function handler(request: Request): Promise<Response> {
     }
   }
 
-  // ── Price alerts ──
+  // ── Price alerts (GET/POST/PUT/DELETE) ──
   if (url.pathname === "/api/alerts") {
     if (request.method === "GET") {
       const rows = await db.select().from(priceAlerts).where(eq(priceAlerts.ownerHash, identity.hash)).orderBy(asc(priceAlerts.createdAt));
@@ -470,8 +599,9 @@ export default async function handler(request: Request): Promise<Response> {
       const direction = body?.direction ?? current.direction;
       const targetPrice = body?.targetPrice === undefined ? current.targetPrice : Number(body?.targetPrice);
       const active = body?.active === undefined ? current.active : (body?.active ? 1 : 0);
+      const triggeredAt = body?.triggeredAt !== undefined ? (typeof body?.triggeredAt === "string" ? body.triggeredAt : null) : (active === 1 ? null : current.triggeredAt);
       if ((direction !== "above" && direction !== "below") || !Number.isFinite(targetPrice) || targetPrice <= 0 || (active !== 0 && active !== 1)) return error("Perubahan alert tidak valid.", 422);
-      await db.update(priceAlerts).set({ direction, targetPrice, active, triggeredAt: active === 1 ? null : (current.triggeredAt ?? new Date().toISOString()), }).where(eq(priceAlerts.id, id));
+      await db.update(priceAlerts).set({ direction, targetPrice, active, triggeredAt }).where(eq(priceAlerts.id, id));
       const updated = (await db.select().from(priceAlerts).where(eq(priceAlerts.id, id)).limit(1))[0];
       return json({ id: updated.id, symbol: updated.symbol, direction: updated.direction, targetPrice: updated.targetPrice, active: updated.active === 1, triggeredAt: updated.triggeredAt, createdAt: updated.createdAt }, 200, headers);
     }
